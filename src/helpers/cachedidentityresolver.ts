@@ -47,3 +47,20 @@ export async function cachedResolveIdentity({
   }
   return data;
 }
+
+export async function resolveIdentity({
+  didOrHandle,
+}: {
+  didOrHandle: string;
+}): Promise<ResolvedIdentity|undefined> {
+  const isDidInput = didOrHandle.startsWith("did:");
+  const url = `https://free-fly-24.deno.dev/?${
+    isDidInput
+      ? `did=${encodeURIComponent(didOrHandle)}`
+      : `handle=${encodeURIComponent(didOrHandle)}`
+  }`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Failed to resolve handle/did");
+  const data = await res.json();
+  return data;
+}

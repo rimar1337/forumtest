@@ -1,27 +1,20 @@
 import {
-  cachedResolveIdentity,
+  resolveIdentity,
   type ResolvedIdentity,
 } from "@/helpers/cachedidentityresolver";
 import { esavQuery } from "@/helpers/esquery";
-import { usePersistentStore } from "@/providers/PersistentStoreProvider";
-import { createFileRoute, Link, useLoaderData, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Outlet } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-
-export const Route = createFileRoute("/f/$forumHandle")({
-  loader: ({ params }) => {
-    console.log("[loader] params.forumHandle:", params.forumHandle);
-    return { forumHandle: params.forumHandle };
-  },
-  component: ForumHeader,
-});
+import { useState } from "react";
+import { useQuery, useQueryClient, QueryClient } from "@tanstack/react-query";
 
 type ForumDoc = {
-  $type: "com.example.ft.forum.definition";
-  $metadata: {
-    uri: string;
-    did: string;
-  };
+  "$metadata.uri": string;
+  "$metadata.cid": string;
+  "$metadata.did": string;
+  "$metadata.collection": string;
+  "$metadata.rkey": string;
+  "$metadata.indexedAt": string;
   displayName?: string;
   description?: string;
   $raw?: {
@@ -29,6 +22,70 @@ type ForumDoc = {
     banner?: { ref?: { $link: string } };
   };
 };
+
+type ResolvedForumData = {
+  forumDoc: ForumDoc;
+  identity: ResolvedIdentity;
+};
+
+const forumQueryOptions = (queryClient: QueryClient, forumHandle: string) => ({
+  queryKey: ["forum", forumHandle],
+  queryFn: async (): Promise<ResolvedForumData> => {
+    if (!forumHandle) {
+      throw new Error("Forum handle is required.");
+    }
+    const normalizedHandle = decodeURIComponent(forumHandle).replace(/^@/, "");
+
+    const identity = await queryClient.fetchQuery({
+      queryKey: ["identity", normalizedHandle],
+      queryFn: () => resolveIdentity({ didOrHandle: normalizedHandle }),
+      staleTime: 1000 * 60 * 60 * 24, // 24 hours
+    });
+
+    if (!identity) {
+      throw new Error(`Could not resolve forum handle: @${normalizedHandle}`);
+    }
+
+    const forumRes = await esavQuery<{
+      hits: { hits: { _source: ForumDoc }[] };
+    }>({
+      query: {
+        bool: {
+          must: [
+            { term: { "$metadata.did": identity.did } },
+            {
+              term: {
+                "$metadata.collection": "com.example.ft.forum.definition",
+              },
+            },
+            { term: { "$metadata.rkey": "self" } },
+          ],
+        },
+      },
+    });
+
+    const forumDoc = forumRes.hits.hits[0]?._source;
+    if (!forumDoc) {
+      throw new Error("Forum definition not found.");
+    }
+
+    return { forumDoc, identity };
+  },
+});
+
+export const Route = createFileRoute("/f/$forumHandle")({
+  loader: ({ context: { queryClient }, params }) =>
+    queryClient.ensureQueryData(
+      forumQueryOptions(queryClient, params.forumHandle)
+    ),
+  component: ForumHeader,
+  pendingComponent: ForumHeaderContentSkeleton,
+  errorComponent: ({ error }) => (
+    <div className="text-red-500 text-center pt-10">
+      Error: {(error as Error).message}
+    </div>
+  ),
+});
 
 function ForumHeaderContentSkeleton() {
   return (
@@ -54,11 +111,14 @@ function ForumHeaderContentSkeleton() {
           <div className="flex items-center justify-between pl-3 pr-[6px] py-1.5">
             <div className="flex flex-wrap items-center gap-3 text-sm">
               {[...Array(6)].map((_, i) => (
-                <div key={i} className="h-5 w-20 bg-gray-700 rounded animate-pulse" />
+                <div
+                  key={i}
+                  className="h-5 w-20 bg-gray-700 rounded animate-pulse"
+                />
               ))}
             </div>
             <div className="relative w-48">
-                <div className="h-[34px] w-full bg-gray-700 rounded-[11px] animate-pulse" />
+              <div className="h-[34px] w-full bg-gray-700 rounded-[11px] animate-pulse" />
             </div>
           </div>
         </div>
@@ -103,7 +163,15 @@ function ForumHeaderSearch() {
     </form>
   );
 }
-function ForumHeaderContent({ forumDoc, identity, forumHandle }:{ forumDoc:ForumDoc, identity: ResolvedIdentity, forumHandle: string }) {
+function ForumHeaderContent({
+  forumDoc,
+  identity,
+  forumHandle,
+}: {
+  forumDoc: ForumDoc;
+  identity: ResolvedIdentity;
+  forumHandle: string;
+}) {
   const did = identity?.did;
   const bannerCid = forumDoc?.$raw?.banner?.ref?.$link;
   const avatarCid = forumDoc?.$raw?.avatar?.ref?.$link;
@@ -118,153 +186,99 @@ function ForumHeaderContent({ forumDoc, identity, forumHandle }:{ forumDoc:Forum
 
   return (
     <div className="w-full flex flex-col items-center pt-6">
-        <div className="w-full max-w-5xl rounded-2xl bg-gray-800 border border-t-0 shadow-2xl overflow-hidden">
-          <div className="relative w-full h-32">
-            {bannerUrl ? (
-              <div
-                className="absolute inset-0 bg-cover bg-center"
-                style={{ backgroundImage: `url(${bannerUrl})` }}
-              />
-            ) : (
-                <div className="absolute inset-0 bg-gray-700/50" />
-            )}
-            <div className="absolute inset-0 bg-black/60" />
-            <div className="relative z-10 flex items-center p-6 h-full">
-              <div className="flex items-center gap-4 max-w-1/2">
-                {/*//@ts-ignore */}
-                <Link to={`/f/${forumHandle}`} className="flex items-center gap-4 no-underline">
-                  {avatarUrl ? (
-                    <img
-                      src={avatarUrl}
-                      alt="Forum avatar"
-                      className="w-16 h-16 rounded-full border border-gray-700 object-cover"
-                    />
-                  ) : (
-                    <div className="w-16 h-16 rounded-full bg-gray-700 flex items-center justify-center text-gray-400">
-                        ?
-                    </div>
-                  )}
-                  <div>
-                    <div className="text-white text-3xl font-bold">
-                      {forumDoc.displayName || "Unnamed Forum"}
-                    </div>
-                    <div className="text-blue-300 font-mono">
-                      /f/{decodeURIComponent(forumHandle || "")}
-                    </div>
+      <div className="w-full max-w-5xl rounded-2xl bg-gray-800 border border-t-0 shadow-2xl overflow-hidden">
+        <div className="relative w-full h-32">
+          {bannerUrl ? (
+            <div
+              className="absolute inset-0 bg-cover bg-center"
+              style={{ backgroundImage: `url(${bannerUrl})` }}
+            />
+          ) : (
+            <div className="absolute inset-0 bg-gray-700/50" />
+          )}
+          <div className="absolute inset-0 bg-black/60" />
+          <div className="relative z-10 flex items-center p-6 h-full">
+            <div className="flex items-center gap-4 max-w-1/2">
+              <Link
+                //@ts-ignore
+                to={`/f/${forumHandle}`}
+                className="flex items-center gap-4 no-underline"
+              >
+                {avatarUrl ? (
+                  <img
+                    src={avatarUrl}
+                    alt="Forum avatar"
+                    className="w-16 h-16 rounded-full border border-gray-700 object-cover"
+                  />
+                ) : (
+                  <div className="w-16 h-16 rounded-full bg-gray-700 flex items-center justify-center text-gray-400">
+                    ?
                   </div>
-                </Link>
-              </div>
-              <div className="ml-auto text-gray-300 text-base text-end max-w-1/2">
-                {forumDoc.description || "No description provided."}
-              </div>
+                )}
+                <div>
+                  <div className="text-white text-3xl font-bold">
+                    {forumDoc.displayName || "Unnamed Forum"}
+                  </div>
+                  <div className="text-blue-300 font-mono">
+                    /f/{decodeURIComponent(forumHandle || "")}
+                  </div>
+                </div>
+              </Link>
             </div>
-          </div>
-
-          <div className="flex items-center justify-between pl-3 pr-[6px] py-1.5">
-            <div className="flex flex-wrap items-center gap-3 text-sm text-gray-300 font-medium">
-              {[
-                "All Topics",
-                "Announcements",
-                "General",
-                "Support",
-                "Off-topic",
-                "Introductions",
-                "Guides",
-                "Feedback",
-              ].map((label) => (
-                <button
-                  key={label}
-                  className="hover:underline hover:text-white transition"
-                  onClick={() => console.log(`Clicked ${label}`)}
-                >
-                  {label}
-                </button>
-              ))}
+            <div className="ml-auto text-gray-300 text-base text-end max-w-1/2">
+              {forumDoc.description || "No description provided."}
             </div>
-
-            <ForumHeaderSearch />
           </div>
         </div>
+
+        <div className="flex items-center justify-between pl-3 pr-[6px] py-1.5">
+          <div className="flex flex-wrap items-center gap-3 text-sm text-gray-300 font-medium">
+            {[
+              "All Topics",
+              "Announcements",
+              "General",
+              "Support",
+              "Off-topic",
+              "Introductions",
+              "Guides",
+              "Feedback",
+            ].map((label) => (
+              <button
+                key={label}
+                className="hover:underline hover:text-white transition"
+                onClick={() => console.log(`Clicked ${label}`)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <ForumHeaderSearch />
+        </div>
       </div>
+    </div>
   );
 }
 
 function ForumHeader() {
-  const { forumHandle } = useLoaderData({
-    from: "/f/$forumHandle",
+  const { forumHandle } = Route.useParams();
+  const initialData = Route.useLoaderData();
+  const queryClient = useQueryClient();
+
+  const { data } = useQuery({
+    ...forumQueryOptions(queryClient, forumHandle),
+    initialData,
   });
-  const { get, set } = usePersistentStore();
-  const [forumDoc, setForumDoc] = useState<ForumDoc | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [identity, setIdentity] = useState<ResolvedIdentity | null>(null);
 
-  useEffect(() => {
-    setForumDoc(null);
-    setError(null);
-    setIdentity(null);
-
-    async function loadForum() {
-      if (!forumHandle) return;
-
-      try {
-        const normalizedHandle = decodeURIComponent(forumHandle).replace(
-          /^@/,
-          ""
-        );
-        const identity = await cachedResolveIdentity({
-          didOrHandle: normalizedHandle,
-          get,
-          set,
-        });
-        setIdentity(identity);
-
-        if (!identity) throw new Error("Could not resolve forum handle");
-        const resolvedDid = identity.did;
-        //setDid(resolvedDid);
-
-        const forumRes = await esavQuery<{
-          hits: { hits: { _source: ForumDoc }[] };
-        }>({
-          query: {
-            bool: {
-              must: [
-                { term: { "$metadata.did": resolvedDid } },
-                {
-                  term: {
-                    "$metadata.collection": "com.example.ft.forum.definition",
-                  },
-                },
-                { term: { "$metadata.rkey": "self" } },
-              ],
-            },
-          },
-        });
-        
-        const doc = forumRes.hits.hits[0]?._source;
-        if (!doc) throw new Error("Forum definition not found.");
-        
-        setForumDoc(doc);
-      } catch (e) {
-        setError((e as Error).message);
-      }
-    }
-
-    loadForum();
-  }, [forumHandle, get, set]);
-
-  if (error) return <div className="text-red-500 text-center pt-10">Error: {error}</div>;
+  const { forumDoc, identity } = data;
 
   return (
     <>
-      {!forumDoc || !identity ? (
-        <ForumHeaderContentSkeleton />
-      ) : (
-        <ForumHeaderContent
-          forumDoc={forumDoc}
-          identity={identity}
-          forumHandle={forumHandle}
-        />
-      )}
+      <ForumHeaderContent
+        forumDoc={forumDoc}
+        identity={identity}
+        forumHandle={forumHandle}
+      />
       <Outlet />
     </>
   );

@@ -1,14 +1,9 @@
-import {
-  createFileRoute,
-  useLoaderData,
-  Link,
-} from "@tanstack/react-router";
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { createFileRoute, Link, useParams } from "@tanstack/react-router";
+import { useMemo, useState } from "react";
 import { useAuth } from "@/providers/PassAuthProvider";
-import { usePersistentStore } from "@/providers/PersistentStoreProvider";
 import { esavQuery } from "@/helpers/esquery";
 import {
-  cachedResolveIdentity,
+  resolveIdentity,
   type ResolvedIdentity,
 } from "@/helpers/cachedidentityresolver";
 import AtpAgent from "@atproto/api";
@@ -20,16 +15,15 @@ import {
   Cross2Icon,
 } from "@radix-ui/react-icons";
 import * as Popover from "@radix-ui/react-popover";
+import { useQuery, useQueryClient, QueryClient } from "@tanstack/react-query";
 
 type PostDoc = {
-  $type: "com.example.ft.topic.post";
-  $metadata: {
-    uri: string;
-    cid: string;
-    did: string;
-    rkey: string;
-    indexedAt: string;
-  };
+  "$metadata.uri": string;
+  "$metadata.cid": string;
+  "$metadata.did": string;
+  "$metadata.collection": string;
+  "$metadata.rkey": string;
+  "$metadata.indexedAt": string;
   forum: string;
   text: string;
   title?: string;
@@ -41,7 +35,11 @@ type PostDoc = {
 };
 
 type ReactionDoc = {
-  $type: "com.example.ft.topic.reaction";
+  "$metadata.uri": string;
+  "$metadata.cid": string;
+  "$metadata.did": string;
+  "$metadata.rkey": string;
+  "$metadata.indexedAt": string;
   reactionEmoji: string;
   reactionSubject: string;
 };
@@ -52,19 +50,180 @@ type AuthorInfo = ResolvedIdentity & {
   footer?: string;
 };
 
+type TopicData = {
+  posts: PostDoc[];
+  authors: Record<string, AuthorInfo>;
+  reactions: Record<string, ReactionDoc[]>;
+};
+
 const EMOJI_SELECTION = ["👍", "❤️", "😂", "🔥", "🤔", "🎉", "🙏", "🤯"];
 
+const topicQueryOptions = (
+  queryClient: QueryClient,
+  userHandle: string,
+  topicRKey: string
+) => ({
+  queryKey: ["topic", userHandle, topicRKey],
+  queryFn: async (): Promise<TopicData> => {
+    const authorIdentity = await queryClient.fetchQuery({
+      queryKey: ["identity", userHandle],
+      queryFn: () => resolveIdentity({ didOrHandle: userHandle }),
+      staleTime: 1000 * 60 * 60 * 24,
+    });
+    if (!authorIdentity) throw new Error("Could not find topic author.");
+
+    const topicUri = `at://${authorIdentity.did}/com.example.ft.topic.post/${topicRKey}`;
+
+    const [postRes, repliesRes] = await Promise.all([
+      esavQuery<{ hits: { hits: { _source: PostDoc }[] } }>({
+        query: { term: { "$metadata.uri": topicUri } },
+        size: 1,
+      }),
+      esavQuery<{ hits: { hits: { _source: PostDoc }[] } }>({
+        query: { term: { root: topicUri } },
+        sort: [{ "$metadata.indexedAt": "asc" }],
+        size: 100,
+      }),
+    ]);
+
+    if (postRes.hits.hits.length === 0) throw new Error("Topic not found.");
+    const mainPost = postRes.hits.hits[0]._source;
+    const fetchedReplies = repliesRes.hits.hits.map((h) => h._source);
+    const allPosts = [mainPost, ...fetchedReplies];
+
+    const postUris = allPosts.map((p) => p["$metadata.uri"]);
+    const authorDids = [...new Set(allPosts.map((p) => p["$metadata.did"]))];
+
+    const [reactionsRes, footersRes, pdsProfiles] = await Promise.all([
+      esavQuery<{ hits: { hits: { _source: ReactionDoc }[] } }>({
+        query: {
+          bool: {
+            must: [
+              {
+                term: {
+                  "$metadata.collection": "com.example.ft.topic.reaction",
+                },
+              },
+              { terms: { reactionSubject: postUris } },
+            ],
+          },
+        },
+        _source: ["reactionSubject", "reactionEmoji"],
+        size: 1000,
+      }),
+      esavQuery<{
+        hits: {
+          hits: { _source: { "$metadata.did": string; footer: string } }[];
+        };
+      }>({
+        query: {
+          bool: {
+            must: [
+              { term: { $type: "com.example.ft.user.profile" } },
+              { terms: { "$metadata.did": authorDids } },
+            ],
+          },
+        },
+        _source: ["$metadata.did", "footer"],
+        size: authorDids.length,
+      }),
+      Promise.all(
+        authorDids.map(async (did) => {
+          try {
+            const identity = await queryClient.fetchQuery({
+              queryKey: ["identity", did],
+              queryFn: () => resolveIdentity({ didOrHandle: did }),
+              staleTime: 1000 * 60 * 60 * 24,
+            });
+
+            if (!identity?.pdsUrl) {
+              console.warn(
+                `Could not resolve PDS for ${did}, cannot fetch profile.`
+              );
+              return { did, profile: null };
+            }
+
+            const profileUrl = `${identity.pdsUrl}/xrpc/com.atproto.repo.getRecord?repo=${did}&collection=app.bsky.actor.profile&rkey=self`;
+            const profileRes = await fetch(profileUrl);
+
+            if (!profileRes.ok) {
+              console.warn(
+                `Failed to fetch profile for ${did} from ${identity.pdsUrl}. Status: ${profileRes.status}`
+              );
+              return { did, profile: null };
+            }
+
+            const profileData = await profileRes.json();
+            return { did, profile: profileData.value };
+          } catch (e) {
+            console.error(
+              `Error during decentralized profile fetch for ${did}:`,
+              e
+            );
+            return { did, profile: null };
+          }
+        })
+      ),
+    ]);
+
+    const reactionsByPostUri = reactionsRes.hits.hits.reduce(
+      (acc, hit) => {
+        const reaction = hit._source;
+        (acc[reaction.reactionSubject] =
+          acc[reaction.reactionSubject] || []).push(reaction);
+        return acc;
+      },
+      {} as Record<string, ReactionDoc[]>
+    );
+
+    const footersByDid = footersRes.hits.hits.reduce(
+      (acc, hit) => {
+        acc[hit._source["$metadata.did"]] = hit._source.footer;
+        return acc;
+      },
+      {} as Record<string, string>
+    );
+
+    const authors: Record<string, AuthorInfo> = {};
+    await Promise.all(
+      authorDids.map(async (did) => {
+        const identity = await queryClient.fetchQuery({
+          queryKey: ["identity", did],
+          queryFn: () => resolveIdentity({ didOrHandle: did }),
+          staleTime: 1000 * 60 * 60 * 24,
+        });
+        if (!identity) return;
+        const pdsProfile = pdsProfiles.find((p) => p.did === did)?.profile;
+        authors[did] = {
+          ...identity,
+          displayName: pdsProfile?.displayName,
+          avatarCid: pdsProfile?.avatar?.ref?.["$link"],
+          footer: footersByDid[did],
+        };
+      })
+    );
+
+    return { posts: allPosts, authors, reactions: reactionsByPostUri };
+  },
+});
 export const Route = createFileRoute(
   "/f/$forumHandle/t/$userHandle/$topicRKey"
 )({
-  loader: ({ params }) => {
-    return {
-      forumHandle: decodeURIComponent(params.forumHandle),
-      userHandle: decodeURIComponent(params.userHandle),
-      topicRKey: params.topicRKey,
-    };
-  },
+  loader: ({ context: { queryClient }, params }) =>
+    queryClient.ensureQueryData(
+      topicQueryOptions(
+        queryClient,
+        decodeURIComponent(params.userHandle),
+        params.topicRKey
+      )
+    ),
   component: ForumTopic,
+  pendingComponent: TopicPageSkeleton,
+  errorComponent: ({ error }) => (
+    <div className="text-center text-red-500 pt-20 text-lg">
+      Error: {(error as Error).message}
+    </div>
+  ),
 });
 
 export function PostCardSkeleton() {
@@ -279,169 +438,42 @@ export function PostCard({
 }
 
 export function ForumTopic() {
-  const { forumHandle, userHandle, topicRKey } = useLoaderData({
+  const { forumHandle, userHandle, topicRKey } = useParams({
     from: "/f/$forumHandle/t/$userHandle/$topicRKey",
   });
-
   const { agent, loading: authLoading } = useAuth();
-  const { get, set } = usePersistentStore();
+  const queryClient = useQueryClient();
+  const initialData = Route.useLoaderData();
 
-  const [posts, setPosts] = useState<PostDoc[]>([]);
-  const [authors, setAuthors] = useState<Record<string, AuthorInfo>>({});
-  const [reactions, setReactions] = useState<Record<string, ReactionDoc[]>>({});
-  const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const { data, isError, error } = useQuery({
+    ...topicQueryOptions(queryClient, userHandle, topicRKey),
+    initialData,
+    refetchInterval: 30 * 1000, // refresh every half minute
+  });
+
+  const { posts, authors, reactions } = data;
 
   const [replyText, setReplyText] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [replyingTo, setReplyingTo] = useState<PostDoc | null>(null);
   const [isCreatingReaction, setIsCreatingReaction] = useState(false);
-
-  const loadTopic = useCallback(async () => {
-    setError(null);
-    try {
-      const authorIdentity = await cachedResolveIdentity({
-        didOrHandle: userHandle,
-        get,
-        set,
-      });
-      if (!authorIdentity) throw new Error("Could not find topic author.");
-      const topicUri = `at://${authorIdentity.did}/com.example.ft.topic.post/${topicRKey}`;
-
-      const [postRes, repliesRes] = await Promise.all([
-        esavQuery<{ hits: { hits: { _source: PostDoc }[] } }>({
-          query: { term: { "$metadata.uri": topicUri } },
-          size: 1,
-        }),
-        esavQuery<{ hits: { hits: { _source: PostDoc }[] } }>({
-          query: { term: { root: topicUri } },
-          sort: [{ "$metadata.indexedAt": "asc" }],
-          size: 100,
-        }),
-      ]);
-
-      if (postRes.hits.hits.length === 0) throw new Error("Topic not found.");
-      const mainPost = postRes.hits.hits[0]._source;
-      const fetchedReplies = repliesRes.hits.hits.map((h) => h._source);
-      const allPosts = [mainPost, ...fetchedReplies];
-      setPosts(allPosts);
-
-      const postUris = allPosts.map((p) => p["$metadata.uri"]);
-      const authorDids = [...new Set(allPosts.map((p) => p["$metadata.did"]))];
-
-      const [reactionsRes, footersRes, pdsProfiles] = await Promise.all([
-        esavQuery<{ hits: { hits: { _source: ReactionDoc }[] } }>({
-          query: {
-            bool: {
-              must: [
-                {
-                  term: {
-                    "$metadata.collection": "com.example.ft.topic.reaction",
-                  },
-                },
-                { terms: { reactionSubject: postUris } },
-              ],
-            },
-          },
-          _source: ["reactionSubject", "reactionEmoji"],
-          size: 1000,
-        }),
-
-        esavQuery<{
-          hits: {
-            hits: { _source: { "$metadata.did": string; footer: string } }[];
-          };
-        }>({
-          query: {
-            bool: {
-              must: [
-                { term: { $type: "com.example.ft.user.profile" } },
-                { terms: { "$metadata.did": authorDids } },
-              ],
-            },
-          },
-          _source: ["$metadata.did", "footer"],
-          size: authorDids.length,
-        }),
-
-        Promise.all(
-          authorDids.map(async (did) => {
-            if (!agent) return { did, profile: null };
-            try {
-              const res = await agent.com.atproto.repo.getRecord({
-                repo: did,
-                collection: "app.bsky.actor.profile",
-                rkey: "self",
-              });
-              return {
-                did,
-                profile: JSON.parse(JSON.stringify(res.data.value)),
-              };
-            } catch (e) {
-              return { did, profile: null };
-            }
-          })
-        ),
-      ]);
-
-      const reactionsByPostUri = reactionsRes.hits.hits.reduce(
-        (acc, hit) => {
-          const reaction = hit._source;
-          (acc[reaction.reactionSubject] = acc[reaction.reactionSubject] || []).push(reaction);
-          return acc;
-        },
-        {} as Record<string, ReactionDoc[]>
-      );
-      setReactions(reactionsByPostUri);
-
-      const footersByDid = footersRes.hits.hits.reduce(
-        (acc, hit) => {
-          acc[hit._source["$metadata.did"]] = hit._source.footer;
-          return acc;
-        },
-        {} as Record<string, string>
-      );
-
-      const newAuthors: Record<string, AuthorInfo> = {};
-      await Promise.all(
-        authorDids.map(async (did) => {
-          const identity = await cachedResolveIdentity({
-            didOrHandle: did,
-            get,
-            set,
-          });
-          if (!identity) return;
-          const pdsProfile = pdsProfiles.find((p) => p.did === did)?.profile;
-          newAuthors[did] = {
-            ...identity,
-            displayName: pdsProfile?.displayName,
-            avatarCid: pdsProfile?.avatar?.ref?.["$link"],
-            footer: footersByDid[did],
-          };
-        })
-      );
-      setAuthors(newAuthors);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }, [topicRKey, userHandle, get, set, agent]);
-
-  useEffect(() => {
-    if (!authLoading) {
-      setIsLoading(true);
-      loadTopic().finally(() => setIsLoading(false));
-    }
-  }, [authLoading, loadTopic]);
+  const [mutationError, setMutationError] = useState<string | null>(null);
 
   const handleSetReplyParent = (post: PostDoc) => {
     setReplyingTo(post);
     document.getElementById("reply-box")?.focus();
   };
 
+  const invalidateTopicQuery = () => {
+    queryClient.invalidateQueries({
+      queryKey: ["topic", userHandle, topicRKey],
+    });
+  };
+
   const handleCreateReaction = async (post: PostDoc, emoji: string) => {
     if (!agent?.did || isCreatingReaction) return;
     setIsCreatingReaction(true);
-    const postUri = post["$metadata.uri"];
+    setMutationError(null);
     try {
       await agent.com.atproto.repo.createRecord({
         repo: agent.did,
@@ -449,22 +481,14 @@ export function ForumTopic() {
         record: {
           $type: "com.example.ft.topic.reaction",
           reactionEmoji: emoji,
-          subject: postUri,
+          subject: post["$metadata.uri"],
           createdAt: new Date().toISOString(),
         },
       });
-      const newReaction: ReactionDoc = {
-        $type: "com.example.ft.topic.reaction",
-        reactionEmoji: emoji,
-        reactionSubject: postUri,
-      };
-      setReactions((prev) => ({
-        ...prev,
-        [postUri]: [...(prev[postUri] || []), newReaction],
-      }));
+      invalidateTopicQuery();
     } catch (e) {
       console.error("Failed to create reaction", e);
-      setError("Failed to post reaction. Please try again.");
+      setMutationError("Failed to post reaction. Please try again.");
     } finally {
       setIsCreatingReaction(false);
     }
@@ -474,18 +498,10 @@ export function ForumTopic() {
     if (!agent?.did || isSubmitting || !replyText.trim() || posts.length === 0)
       return;
     setIsSubmitting(true);
-    setError(null);
+    setMutationError(null);
     try {
       const rootPost = posts[0];
-      const rootRef = {
-        uri: rootPost["$metadata.uri"],
-        cid: rootPost["$metadata.cid"],
-      };
       const parentPost = replyingTo || rootPost;
-      const parentRef = {
-        uri: parentPost["$metadata.uri"],
-        cid: parentPost["$metadata.cid"],
-      };
       await agent.com.atproto.repo.createRecord({
         repo: agent.did,
         collection: "com.example.ft.topic.post",
@@ -493,31 +509,33 @@ export function ForumTopic() {
           $type: "com.example.ft.topic.post",
           text: replyText,
           forum: forumHandle,
-          reply: { root: rootRef, parent: parentRef },
+          reply: {
+            root: {
+              uri: rootPost["$metadata.uri"],
+              cid: rootPost["$metadata.cid"],
+            },
+            parent: {
+              uri: parentPost["$metadata.uri"],
+              cid: parentPost["$metadata.cid"],
+            },
+          },
           createdAt: new Date().toISOString(),
         },
       });
       setReplyText("");
       setReplyingTo(null);
-      await loadTopic();
+      invalidateTopicQuery();
     } catch (e) {
-      setError(`Failed to post reply: ${(e as Error).message}`);
+      setMutationError(`Failed to post reply: ${(e as Error).message}`);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  if (isLoading) return <TopicPageSkeleton />;
-  if (error)
+  if (isError)
     return (
-      <div className="text-center text-red-500 pt-20 text-lg">
-        Error: {error}
-      </div>
-    );
-  if (posts.length === 0)
-    return (
-      <div className="text-center text-gray-400 pt-20 text-lg">
-        Topic not found.
+      <div className="text-red-500 p-8 text-center">
+        Error: {(error as Error).message}
       </div>
     );
 
@@ -580,6 +598,9 @@ export function ForumTopic() {
                 </div>
               )}
             </div>
+            {mutationError && (
+              <p className="text-red-400 text-sm mb-2">{mutationError}</p>
+            )}
             <textarea
               id="reply-box"
               value={replyText}
