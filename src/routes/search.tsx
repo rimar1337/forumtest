@@ -73,6 +73,10 @@ function SearchResultCard({ post, ...rest }: SearchResultCardProps) {
   const [forumHandle, setForumHandle] = useState<string | undefined>(undefined);
   const { get, set } = usePersistentStore();
 
+  const thing = post["forum"]// || new AtUripost["root"]
+  const trimmed = thing.startsWith("@") ? thing.slice(1) : thing
+
+
   const rootUri = useMemo(() => post.root || post["$metadata.uri"], [post]);
   const postUri = post["$metadata.uri"];
 
@@ -85,9 +89,9 @@ function SearchResultCard({ post, ...rest }: SearchResultCardProps) {
     let isCancelled = false;
     const buildLink = async () => {
       try {
-        const rootAtUri = new AtUri(rootUri);
+        //const forumAtUri = new AtUri(forumdid);
         const authorIdentity = await cachedResolveIdentity({
-          didOrHandle: rootAtUri.hostname,
+          didOrHandle: trimmed,
           get,
           set,
         });
@@ -135,7 +139,7 @@ function SearchResultCard({ post, ...rest }: SearchResultCardProps) {
             params={{ forumHandle: post.forum }}
             className="font-semibold text-blue-300 hover:underline"
           >
-            /f/{forumHandle || post.root}
+            /f/{forumHandle}
           </Link>
         </span>
         {threadLink ? (

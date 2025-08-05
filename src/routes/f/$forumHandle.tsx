@@ -123,6 +123,7 @@ function ForumHeaderContentSkeleton() {
           </div>
         </div>
       </div>
+      <Outlet />
     </>
   );
 }
