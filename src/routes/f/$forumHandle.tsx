@@ -23,6 +23,12 @@ type ForumDoc = {
   };
 };
 
+type ResolvedForum = ForumDoc & {
+  resolvedIdentity?: {
+    handle: string;
+    pdsUrl: string;
+  };
+};
 type ResolvedForumData = {
   forumDoc: ForumDoc;
   identity: ResolvedIdentity;
@@ -74,10 +80,67 @@ const forumQueryOptions = (queryClient: QueryClient, forumHandle: string) => ({
 });
 
 export const Route = createFileRoute("/f/$forumHandle")({
-  loader: ({ context: { queryClient }, params }) =>
-    queryClient.ensureQueryData(
-      forumQueryOptions(queryClient, params.forumHandle)
-    ),
+  loader: async ({ context: { queryClient }, params }) => {
+  const normalizedHandle = decodeURIComponent(params.forumHandle).replace(/^@/, "");
+
+  const identity = await queryClient.fetchQuery({
+    queryKey: ["identity", normalizedHandle],
+    queryFn: () => resolveIdentity({ didOrHandle: normalizedHandle }),
+    staleTime: 1000 * 60 * 60 * 24,
+  });
+
+  if (!identity) {
+    throw new Error(`Could not resolve forum handle: @${normalizedHandle}`);
+  }
+
+  const forums = queryClient.getQueryData<ResolvedForum[]>(["forums", "list"]);
+  const forumFromList = forums?.find(f => f["$metadata.did"] === identity.did)
+
+  const initialData: ResolvedForumData | undefined = forumFromList
+    ? {
+        forumDoc: forumFromList,
+        identity: {
+          handle: forumFromList.resolvedIdentity!.handle,
+          did: forumFromList["$metadata.did"],
+          pdsUrl: forumFromList.resolvedIdentity!.pdsUrl,
+          bskyPds: false,
+        },
+      }
+    : undefined
+
+  if (initialData) {
+    return initialData;
+  }
+
+  // Fallback to direct fetch
+  const forumRes = await esavQuery<{
+    hits: { hits: { _source: ForumDoc }[] };
+  }>({
+    query: {
+      bool: {
+        must: [
+          { term: { "$metadata.did": identity.did } },
+          {
+            term: {
+              "$metadata.collection": "com.example.ft.forum.definition",
+            },
+          },
+          { term: { "$metadata.rkey": "self" } },
+        ],
+      },
+    },
+  });
+
+  const forumDoc = forumRes.hits.hits[0]?._source;
+  if (!forumDoc) {
+    throw new Error("Forum definition not found.");
+  }
+
+  return {
+    forumDoc,
+    identity,
+  };
+},
   component: ForumHeader,
   pendingComponent: ForumHeaderContentSkeleton,
   errorComponent: ({ error }) => (

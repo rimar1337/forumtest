@@ -502,13 +502,22 @@ export function ForumTopic() {
     try {
       const rootPost = posts[0];
       const parentPost = replyingTo || rootPost;
+      const identity = await queryClient.fetchQuery({
+        queryKey: ["identity", forumHandle],
+        queryFn: () => resolveIdentity({ didOrHandle: forumHandle }),
+        staleTime: 1000 * 60 * 60 * 24,
+      });
+      const forumDid = identity?.did;
+      if (!forumDid) {
+        throw new Error("Could not resolve forum handle to DID.");
+      }
       await agent.com.atproto.repo.createRecord({
         repo: agent.did,
         collection: "com.example.ft.topic.post",
         record: {
           $type: "com.example.ft.topic.post",
           text: replyText,
-          forum: forumHandle,
+          forum: forumDid,
           reply: {
             root: {
               uri: rootPost["$metadata.uri"],
