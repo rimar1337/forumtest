@@ -5,8 +5,9 @@ import {
 import { esavQuery } from "@/helpers/esquery";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Outlet } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useQueryClient, QueryClient } from "@tanstack/react-query";
+import { useCachedProfileJotai, useEsavDocument, useEsavQuery } from "@/esav/hooks";
 
 type ForumDoc = {
   "$metadata.uri": string;
@@ -34,120 +35,8 @@ type ResolvedForumData = {
   identity: ResolvedIdentity;
 };
 
-const forumQueryOptions = (queryClient: QueryClient, forumHandle: string) => ({
-  queryKey: ["forum", forumHandle],
-  queryFn: async (): Promise<ResolvedForumData> => {
-    if (!forumHandle) {
-      throw new Error("Forum handle is required.");
-    }
-    const normalizedHandle = decodeURIComponent(forumHandle).replace(/^@/, "");
-
-    const identity = await queryClient.fetchQuery({
-      queryKey: ["identity", normalizedHandle],
-      queryFn: () => resolveIdentity({ didOrHandle: normalizedHandle }),
-      staleTime: 1000 * 60 * 60 * 24, // 24 hours
-    });
-
-    if (!identity) {
-      throw new Error(`Could not resolve forum handle: @${normalizedHandle}`);
-    }
-
-    const forumRes = await esavQuery<{
-      hits: { hits: { _source: ForumDoc }[] };
-    }>({
-      query: {
-        bool: {
-          must: [
-            { term: { "$metadata.did": identity.did } },
-            {
-              term: {
-                "$metadata.collection": "com.example.ft.forum.definition",
-              },
-            },
-            { term: { "$metadata.rkey": "self" } },
-          ],
-        },
-      },
-    });
-
-    const forumDoc = forumRes.hits.hits[0]?._source;
-    if (!forumDoc) {
-      throw new Error("Forum definition not found.");
-    }
-
-    return { forumDoc, identity };
-  },
-});
-
 export const Route = createFileRoute("/f/$forumHandle")({
-  loader: async ({ context: { queryClient }, params }) => {
-  const normalizedHandle = decodeURIComponent(params.forumHandle).replace(/^@/, "");
-
-  const identity = await queryClient.fetchQuery({
-    queryKey: ["identity", normalizedHandle],
-    queryFn: () => resolveIdentity({ didOrHandle: normalizedHandle }),
-    staleTime: 1000 * 60 * 60 * 24,
-  });
-
-  if (!identity) {
-    throw new Error(`Could not resolve forum handle: @${normalizedHandle}`);
-  }
-
-  const forums = queryClient.getQueryData<ResolvedForum[]>(["forums", "list"]);
-  const forumFromList = forums?.find(f => f["$metadata.did"] === identity.did)
-
-  const initialData: ResolvedForumData | undefined = forumFromList
-    ? {
-        forumDoc: forumFromList,
-        identity: {
-          handle: forumFromList.resolvedIdentity!.handle,
-          did: forumFromList["$metadata.did"],
-          pdsUrl: forumFromList.resolvedIdentity!.pdsUrl,
-          bskyPds: false,
-        },
-      }
-    : undefined
-
-  if (initialData) {
-    return initialData;
-  }
-
-  // Fallback to direct fetch
-  const forumRes = await esavQuery<{
-    hits: { hits: { _source: ForumDoc }[] };
-  }>({
-    query: {
-      bool: {
-        must: [
-          { term: { "$metadata.did": identity.did } },
-          {
-            term: {
-              "$metadata.collection": "com.example.ft.forum.definition",
-            },
-          },
-          { term: { "$metadata.rkey": "self" } },
-        ],
-      },
-    },
-  });
-
-  const forumDoc = forumRes.hits.hits[0]?._source;
-  if (!forumDoc) {
-    throw new Error("Forum definition not found.");
-  }
-
-  return {
-    forumDoc,
-    identity,
-  };
-},
   component: ForumHeader,
-  pendingComponent: ForumHeaderContentSkeleton,
-  errorComponent: ({ error }) => (
-    <div className="text-red-500 text-center pt-10">
-      Error: {(error as Error).message}
-    </div>
-  ),
 });
 
 function ForumHeaderContentSkeleton() {
@@ -186,7 +75,6 @@ function ForumHeaderContentSkeleton() {
           </div>
         </div>
       </div>
-      <Outlet />
     </>
   );
 }
@@ -227,25 +115,58 @@ function ForumHeaderSearch() {
     </form>
   );
 }
-function ForumHeaderContent({
-  forumDoc,
-  identity,
-  forumHandle,
-}: {
-  forumDoc: ForumDoc;
-  identity: ResolvedIdentity;
-  forumHandle: string;
-}) {
-  const did = identity?.did;
-  const bannerCid = forumDoc?.$raw?.banner?.ref?.$link;
-  const avatarCid = forumDoc?.$raw?.avatar?.ref?.$link;
+function ForumHeaderContent() {
+  const { forumHandle } = Route.useParams();
+  const [profile, isLoading] = useCachedProfileJotai(forumHandle);
+
+  const forumQuery = useMemo(() => {
+    if (!profile?.did) {
+      return null;
+    }
+
+    const query = {
+      query: {
+        bool: {
+          must: [
+            { term: { "$metadata.did": profile.did } },
+            {
+              term: {
+                "$metadata.collection": "party.whey.ft.forum.definition",
+              },
+            },
+            { term: { "$metadata.rkey": "self" } },
+          ],
+        },
+      },
+      sort: [{ '$metadata.indexedAt': 'desc' }]
+    };
+    return query;
+  }, [profile?.did]);
+
+  const {
+    uris = [],
+    isLoading: isQueryLoading,
+  } = useEsavQuery(`forumtest/${profile?.did}`, forumQuery!, {
+    enabled: !!profile?.did && !!forumQuery,
+  });
+  
+  const data = useEsavDocument(uris[0]);
+
+  if (!profile || isLoading || isQueryLoading || !data) {
+    return <ForumHeaderContentSkeleton />;
+  }
+
+  const did = profile.did;
+  const bannerCid = profile.profile?.banner?.ref?.$link;
+  const avatarCid = profile.profile?.avatar?.ref?.$link;
+
   const bannerUrl =
     did && bannerCid
-      ? `${identity?.pdsUrl}/xrpc/com.atproto.sync.getBlob?did=${did}&cid=${bannerCid}`
+      ? `${profile?.pdsUrl}/xrpc/com.atproto.sync.getBlob?did=${did}&cid=${bannerCid}`
       : null;
   const avatarUrl =
     did && avatarCid
-      ? `${identity?.pdsUrl}/xrpc/com.atproto.sync.getBlob?did=${did}&cid=${avatarCid}`
+      ? `${profile?.pdsUrl}/xrpc/com.atproto.sync.getBlob?did=${did}&cid=${avatarCid}`
       : null;
 
   return (
@@ -281,7 +202,7 @@ function ForumHeaderContent({
                 )}
                 <div>
                   <div className="text-white text-3xl font-bold">
-                    {forumDoc.displayName || "Unnamed Forum"}
+                    {profile.profile.displayName || "Unnamed Forum"}
                   </div>
                   <div className="text-blue-300 font-mono">
                     /f/{decodeURIComponent(forumHandle || "")}
@@ -290,7 +211,7 @@ function ForumHeaderContent({
               </Link>
             </div>
             <div className="ml-auto text-gray-300 text-base text-end max-w-1/2">
-              {forumDoc.description || "No description provided."}
+              {profile.profile.description || "No description provided."}
             </div>
           </div>
         </div>
@@ -325,24 +246,9 @@ function ForumHeaderContent({
 }
 
 function ForumHeader() {
-  const { forumHandle } = Route.useParams();
-  const initialData = Route.useLoaderData();
-  const queryClient = useQueryClient();
-
-  const { data } = useQuery({
-    ...forumQueryOptions(queryClient, forumHandle),
-    initialData,
-  });
-
-  const { forumDoc, identity } = data;
-
   return (
     <>
-      <ForumHeaderContent
-        forumDoc={forumDoc}
-        identity={identity}
-        forumHandle={forumHandle}
-      />
+      <ForumHeaderContent/>
       <Outlet />
     </>
   );

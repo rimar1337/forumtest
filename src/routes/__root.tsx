@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-router";
 import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
+import { DeltaLogViewer, ReconnectingHeader } from "@/esav/components";
       
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -14,9 +15,11 @@ export const Route = createRootRouteWithContext<{
   component: () => (
     <>
       <Header />
+      <ReconnectingHeader />
       <Outlet />
       <TanStackRouterDevtools />
       <ReactQueryDevtools />
+      <DeltaLogViewer />
     </>
   ),
 });

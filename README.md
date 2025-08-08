@@ -12,21 +12,21 @@ Discuss at: [https://forumtest.whey.party/f/@forumtest.whey.party](https://forum
 custom record types:
 ```json
 "record_types": [
-  "com.example.ft.topic.post",
-  "com.example.ft.topic.reaction",
-  "com.example.ft.topic.moderation",
-  "com.example.ft.forum.definition",
-  "com.example.ft.forum.layout",
-  "com.example.ft.forum.request",
-  "com.example.ft.forum.accept",
-  "com.example.ft.forum.category"
+  "party.whey.ft.topic.post",
+  "party.whey.ft.topic.reaction",
+  "party.whey.ft.topic.moderation",
+  "party.whey.ft.forum.definition",
+  "party.whey.ft.forum.layout",
+  "party.whey.ft.forum.request",
+  "party.whey.ft.forum.accept",
+  "party.whey.ft.forum.category"
   ],
 ```
 
 custom indexes:
 ```json
 "index_fields": {
-  "com.example.ft.topic.reaction": {
+  "party.whey.ft.topic.reaction": {
     "subject": {
       "id": "reactionSubject",
       "type": "keyword"
@@ -36,7 +36,7 @@ custom indexes:
       "type": "keyword"
     }
   },
-  "com.example.ft.topic.post": {
+  "party.whey.ft.topic.post": {
     "text": {
       "id": "text",
       "type": "text"
@@ -58,7 +58,7 @@ custom indexes:
       "type": "keyword"
     }
   },
-  "com.example.ft.forum.definition": {
+  "party.whey.ft.forum.definition": {
     "description": {
       "id": "description",
       "type": "text"

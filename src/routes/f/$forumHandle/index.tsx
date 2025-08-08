@@ -4,7 +4,7 @@ import {
   Link,
   useParams,
 } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   resolveIdentity,
   type ResolvedIdentity,
@@ -16,6 +16,14 @@ import { ChevronDownIcon, CheckIcon, Cross2Icon } from "@radix-ui/react-icons";
 import { useAuth } from "@/providers/PassAuthProvider";
 import { AtUri, BskyAgent } from "@atproto/api";
 import { useQuery, useQueryClient, QueryClient } from "@tanstack/react-query";
+import {
+  useCachedProfileJotai,
+  useEsavQuery,
+  useEsavDocument,
+  parseAtUri,
+  type Profile,
+  useResolvedDocuments,
+} from "@/esav/hooks";
 
 type PostDoc = {
   "$metadata.uri": string;
@@ -67,199 +75,6 @@ type TopicListData = {
   profilesMap: Record<string, ProfileData>;
 };
 
-const topicListQueryOptions = (
-  queryClient: QueryClient,
-  forumHandle: string
-) => ({
-  queryKey: ["topics", forumHandle],
-  queryFn: async (): Promise<TopicListData> => {
-    const normalizedHandle = decodeURIComponent(forumHandle).replace(/^@/, "");
-
-    const identity = await queryClient.fetchQuery({
-      queryKey: ["identity", normalizedHandle],
-      queryFn: () => resolveIdentity({ didOrHandle: normalizedHandle }),
-      staleTime: 1000 * 60 * 60 * 24, // 24 hours
-    });
-
-    if (!identity) {
-      throw new Error(`Could not resolve forum handle: @${normalizedHandle}`);
-    }
-
-    const postRes = await esavQuery<{
-      hits: { hits: { _source: PostDoc }[] };
-    }>({
-      query: {
-        bool: {
-          must: [
-            { term: { forum: identity.did } },
-            { term: { "$metadata.collection": "com.example.ft.topic.post" } },
-            { bool: { must_not: [{ exists: { field: "root" } }] } },
-          ],
-        },
-      },
-      sort: [{ "$metadata.indexedAt": { order: "desc" } }],
-      size: 100,
-    });
-    const initialPosts = postRes.hits.hits.map((h) => h._source);
-
-    const postsWithDetails = await Promise.all(
-      initialPosts.map(async (post) => {
-        const [repliesRes, latestReplyRes] = await Promise.all([
-          esavQuery<{
-            hits: { total: { value: number } };
-            aggregations: { unique_dids: { buckets: { key: string }[] } };
-          }>({
-            size: 0,
-            track_total_hits: true,
-            query: {
-              bool: { must: [{ term: { root: post["$metadata.uri"] } }] },
-            },
-            aggs: {
-              unique_dids: { terms: { field: "$metadata.did", size: 10000 } },
-            },
-          }),
-          esavQuery<{
-            hits: { hits: { _source: LatestReply }[] };
-          }>({
-            query: {
-              bool: { must: [{ term: { root: post["$metadata.uri"] } }] },
-            },
-            sort: [{ "$metadata.indexedAt": { order: "desc" } }],
-            size: 1,
-            _source: ["$metadata.did", "$metadata.indexedAt"],
-          }),
-        ]);
-
-        const replyCount = repliesRes.hits.total.value;
-        const replyDids = repliesRes.aggregations.unique_dids.buckets.map(
-          (b) => b.key
-        );
-        const participants = Array.from(
-          new Set([post["$metadata.did"], ...replyDids])
-        );
-        const latestReply = latestReplyRes.hits.hits[0]?._source ?? null;
-
-        return { ...post, replyCount, participants, latestReply };
-      })
-    );
-
-    const postUris = postsWithDetails.map((p) => p["$metadata.uri"]);
-    const didsToResolve = new Set<string>();
-    postsWithDetails.forEach((p) => {
-      didsToResolve.add(p["$metadata.did"]);
-      p.participants?.forEach((did) => didsToResolve.add(did));
-      if (p.latestReply) {
-        didsToResolve.add(p.latestReply["$metadata.did"]);
-      }
-    });
-    const authorDids = Array.from(didsToResolve);
-
-    const [reactionsRes, pdsProfiles] = await Promise.all([
-      esavQuery<{
-        hits: {
-          hits: {
-            _source: { reactionSubject: string; reactionEmoji: string };
-          }[];
-        };
-      }>({
-        query: {
-          bool: {
-            must: [
-              {
-                term: {
-                  "$metadata.collection": "com.example.ft.topic.reaction",
-                },
-              },
-              { terms: { reactionSubject: postUris } },
-            ],
-          },
-        },
-        _source: ["reactionSubject", "reactionEmoji"],
-        size: 10000,
-      }),
-      Promise.all(
-        authorDids.map(async (did) => {
-          try {
-            const identityRes = await queryClient.fetchQuery({
-              queryKey: ["identity", did],
-              queryFn: () => resolveIdentity({ didOrHandle: did }),
-              staleTime: 1000 * 60 * 60 * 24,
-            });
-
-            if (!identityRes?.pdsUrl) {
-              return {
-                did,
-                handle: identityRes?.handle ?? null,
-                pdsUrl: null,
-                profile: null,
-              };
-            }
-
-            const profileUrl = `${identityRes.pdsUrl}/xrpc/com.atproto.repo.getRecord?repo=${did}&collection=app.bsky.actor.profile&rkey=self`;
-            const profileReq = await fetch(profileUrl);
-
-            if (!profileReq.ok) {
-              console.warn(
-                `Failed to fetch profile for ${did} from ${identityRes.pdsUrl}`
-              );
-              return {
-                did,
-                handle: identityRes.handle,
-                pdsUrl: identityRes.pdsUrl,
-                profile: null,
-              };
-            }
-
-            const profileData = await profileReq.json();
-            return {
-              did,
-              handle: identityRes.handle,
-              pdsUrl: identityRes.pdsUrl,
-              profile: profileData.value,
-            };
-          } catch (e) {
-            console.error(`Error resolving or fetching profile for ${did}`, e);
-            return { did, handle: null, pdsUrl: null, profile: null };
-          }
-        })
-      ),
-    ]);
-
-    const reactionsByPost: Record<string, Record<string, number>> = {};
-    for (const hit of reactionsRes.hits.hits) {
-      const { reactionSubject, reactionEmoji } = hit._source;
-      if (!reactionsByPost[reactionSubject])
-        reactionsByPost[reactionSubject] = {};
-      reactionsByPost[reactionSubject][reactionEmoji] =
-        (reactionsByPost[reactionSubject][reactionEmoji] || 0) + 1;
-    }
-
-    const topReactions: Record<string, TopReaction> = {};
-    for (const uri in reactionsByPost) {
-      const counts = reactionsByPost[uri];
-      const topEmoji = Object.entries(counts).reduce(
-        (a, b) => (b[1] > a[1] ? b : a),
-        ["", 0]
-      );
-      if (topEmoji[0]) {
-        topReactions[uri] = { emoji: topEmoji[0], count: topEmoji[1] };
-      }
-    }
-
-    const profilesMap: Record<string, ProfileData> = {};
-    for (const p of pdsProfiles) {
-      profilesMap[p.did] = p;
-    }
-
-    const finalPosts = postsWithDetails.map((post) => ({
-      ...post,
-      topReaction: topReactions[post["$metadata.uri"]] || null,
-    }));
-
-    return { posts: finalPosts, identity, profilesMap };
-  },
-});
-
 function getRelativeTimeString(input: string | Date): string {
   const date = typeof input === "string" ? new Date(input) : input;
   const now = new Date();
@@ -283,17 +98,7 @@ function getRelativeTimeString(input: string | Date): string {
 }
 
 export const Route = createFileRoute("/f/$forumHandle/")({
-  loader: ({ context: { queryClient }, params }) =>
-    queryClient.ensureQueryData(
-      topicListQueryOptions(queryClient, params.forumHandle)
-    ),
   component: Forum,
-  pendingComponent: TopicListSkeleton,
-  errorComponent: ({ error }) => (
-    <div className="text-red-500 p-8 text-center">
-      Error: {(error as Error).message}
-    </div>
-  ),
 });
 
 function ForumHeaderSkeleton() {
@@ -378,20 +183,41 @@ function TopicListSkeleton() {
 }
 
 export function Forum() {
+  const { forumHandle } = Route.useParams();
+  const [profile, isLoading] = useCachedProfileJotai(forumHandle);
+
+  const postsQuery = useMemo(() => {
+    if (!profile?.did) {
+      return null;
+    }
+
+    const query = {
+      query: {
+        bool: {
+          must: [
+            { term: { forum: profile.did } },
+            { term: { "$metadata.collection": "party.whey.ft.topic.post" } },
+            { bool: { must_not: [{ exists: { field: "root" } }] } },
+          ],
+        },
+      },
+      sort: [{ "$metadata.indexedAt": { order: "desc" } }]
+    };
+    return query;
+  }, [profile?.did]);
+
+  const { uris = [], isLoading: isQueryLoading } = useEsavQuery(
+    `forumtest/${profile?.did}/topics`,
+    postsQuery!,
+    {
+      enabled: !!profile?.did && !!postsQuery,
+    }
+  );
+
   const navigate = useNavigate();
   const { agent, loading: authLoading } = useAuth();
-  const { forumHandle } = useParams({ from: "/f/$forumHandle/" });
 
-  const initialData = Route.useLoaderData();
   const queryClient = useQueryClient();
-
-  const { data } = useQuery({
-    ...topicListQueryOptions(queryClient, forumHandle),
-    initialData,
-    refetchInterval: 1000 * 60, // refresh every minute
-  });
-
-  const { posts, identity, profilesMap } = data;
 
   const [selectedCategory, setSelectedCategory] = useState("uncategorized");
   const [sortOrder, setSortOrder] = useState("latest");
@@ -402,7 +228,7 @@ export function Forum() {
   const [formError, setFormError] = useState<string | null>(null);
 
   const handleCreateTopic = async () => {
-    if (!agent || !agent.did || !identity) {
+    if (!agent || !agent.did) {
       setFormError("You must be logged in to create a topic.");
       return;
     }
@@ -417,13 +243,13 @@ export function Forum() {
     try {
       const response = await agent.com.atproto.repo.createRecord({
         repo: agent.did,
-        collection: "com.example.ft.topic.post",
+        collection: "party.whey.ft.topic.post",
         record: {
-          $type: "com.example.ft.topic.post",
+          $type: "party.whey.ft.topic.post",
           title: newTopicTitle,
           text: newTopicText,
           createdAt: new Date().toISOString(),
-          forum: identity.did,
+          forum: profile?.did,
         },
       });
 
@@ -445,6 +271,10 @@ export function Forum() {
       setIsSubmitting(false);
     }
   };
+
+  if (!profile || isLoading || isQueryLoading) {
+    return <TopicListSkeleton />;
+  }
 
   return (
     <div className="w-full flex flex-col items-center pt-6 px-4">
@@ -525,8 +355,8 @@ export function Forum() {
             <Dialog.Trigger asChild>
               <button
                 className="ml-auto bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-md text-sm font-semibold transition disabled:bg-gray-500"
-                disabled={!identity}
-                title={!identity ? "Loading forum..." : "Create a new topic"}
+                disabled={!profile}
+                title={!profile ? "Loading forum..." : "Create a new topic"}
               >
                 + New Topic
               </button>
@@ -640,127 +470,15 @@ export function Forum() {
             </tr>
           </thead>
           <tbody>
-            {posts.length > 0 ? (
-              posts.map((post) => {
-                const rootAuthorProfile = profilesMap[post["$metadata.did"]];
-
-                const lastPostAuthorDid = post.latestReply
-                  ? post.latestReply["$metadata.did"]
-                  : post["$metadata.did"];
-                const lastPostTimestamp = post.latestReply
-                  ? post.latestReply["$metadata.indexedAt"]
-                  : post["$metadata.indexedAt"];
-                const lastPostAuthorProfile = profilesMap[lastPostAuthorDid];
-
-                const lastPostAuthorAvatar =
-                  lastPostAuthorProfile?.profile?.avatar?.ref?.$link &&
-                  lastPostAuthorProfile.pdsUrl
-                    ? `${lastPostAuthorProfile.pdsUrl}/xrpc/com.atproto.sync.getBlob?did=${lastPostAuthorDid}&cid=${lastPostAuthorProfile.profile.avatar.ref.$link}`
-                    : undefined;
-
-                return (
-                  <tr
-                    onClick={() =>
-                      navigate({
-                        to: `/f/${forumHandle}/t/${post["$metadata.did"]}/${post["$metadata.rkey"]}`,
-                      })
-                    }
-                    key={post["$metadata.uri"]}
-                    className="bg-gray-800 hover:bg-gray-700/50 rounded-lg cursor-pointer transition-colors duration-150 group relative"
-                  >
-                    <td className="px-4 py-3 text-white rounded-l-lg min-w-52">
-                      <Link
-                        // @ts-ignore
-                        to={`/f/${forumHandle}/t/${post["$metadata.did"]}/${post["$metadata.rkey"]}`}
-                        className="stretched-link"
-                      >
-                        <span className="sr-only">View topic:</span>
-                      </Link>
-                      <div className="font-semibold text-gray-50 line-clamp-1">
-                        {post.title}
-                      </div>
-                      <div className="text-sm text-gray-400">
-                        by{" "}
-                        <span className="font-medium text-gray-300">
-                          {rootAuthorProfile?.handle
-                            ? `@${rootAuthorProfile.handle}`
-                            : rootAuthorProfile?.did.slice(4, 12)}
-                        </span>
-                        , {getRelativeTimeString(post["$metadata.indexedAt"])}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex -space-x-2 justify-center">
-                        {post.participants?.slice(0, 5).map((did) => {
-                          const participant = profilesMap[did];
-                          const avatarUrl =
-                            participant?.profile?.avatar?.ref?.$link &&
-                            participant?.pdsUrl
-                              ? `${participant.pdsUrl}/xrpc/com.atproto.sync.getBlob?did=${did}&cid=${participant.profile.avatar.ref.$link}`
-                              : undefined;
-                          return avatarUrl ? (
-                            <img
-                              key={did}
-                              src={avatarUrl}
-                              alt={`@${participant?.handle || did.slice(0, 8)}`}
-                              className="w-6 h-6 rounded-full border-2 border-gray-800 object-cover bg-gray-700"
-                              title={`@${participant?.handle || did.slice(0, 8)}`}
-                            />
-                          ) : (
-                            <div
-                              key={did}
-                              className="w-6 h-6 rounded-full border-2 border-gray-800 bg-gray-700"
-                              title={`@${participant?.handle || did.slice(0, 8)}`}
-                            />
-                          );
-                        })}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-center text-gray-100 font-medium">
-                      {(post.replyCount ?? 0) < 1 ? "-" : post.replyCount}
-                    </td>
-                    <td className="px-4 py-3 text-center text-gray-300 font-medium">
-                      {post.topReaction ? (
-                        <div
-                          className="flex items-center justify-center gap-1.5"
-                          title={`${post.topReaction.count} reactions`}
-                        >
-                          <span>{post.topReaction.emoji}</span>
-                          <span className="text-sm font-normal">
-                            {post.topReaction.count}
-                          </span>
-                        </div>
-                      ) : (
-                        "-"
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-gray-400 text-right rounded-r-lg">
-                      <div className="flex items-center justify-end gap-2">
-                        <div className="text-right">
-                          <div className="text-sm font-semibold text-gray-100 line-clamp-1">
-                            {lastPostAuthorProfile?.profile?.displayName ||
-                              (lastPostAuthorProfile?.handle
-                                ? `@${lastPostAuthorProfile.handle}`
-                                : "...")}
-                          </div>
-                          <div className="text-xs">
-                            {getRelativeTimeString(lastPostTimestamp)}
-                          </div>
-                        </div>
-                        {lastPostAuthorAvatar ? (
-                          <img
-                            src={lastPostAuthorAvatar}
-                            alt={lastPostAuthorProfile?.profile?.displayName}
-                            className="w-8 h-8 rounded-full object-cover bg-gray-700 shrink-0"
-                          />
-                        ) : (
-                          <div className="w-8 h-8 rounded-full bg-gray-700 shrink-0" />
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })
+            {uris.length > 0 ? (
+              uris.map((uri) => (
+                <TopicRow
+                  forumHandle={forumHandle}
+                  key={uri}
+                  profile={profile}
+                  uri={uri}
+                />
+              ))
             ) : (
               <tr>
                 <td colSpan={5} className="text-center text-gray-500 py-10">
@@ -772,5 +490,248 @@ export function Forum() {
         </table>
       </div>
     </div>
+  );
+}
+
+function TopicRow({
+  forumHandle,
+  profile,
+  uri,
+}: {
+  forumHandle: string;
+  profile: Profile;
+  uri: string;
+}) {
+  const navigate = useNavigate();
+  const topic = useEsavDocument(uri);
+  const parsed = parseAtUri(uri);
+
+  const fullRepliesQuery = {
+    query: {
+      bool: { must: [{ term: { root: uri } }] },
+    },
+    sort: [{ "$metadata.indexedAt": { order: "asc" } }],
+  };
+
+  const { uris: repliesUris = [], isLoading: isQueryLoading } = useEsavQuery(
+    `forumtest/${profile.did}/${uri}/replies`,
+    fullRepliesQuery!,
+    {
+      enabled: !!fullRepliesQuery,
+    }
+  );
+
+  const topReactions = {
+    query: {
+      bool: {
+        must: [
+          {
+            term: {
+              "$metadata.collection": "party.whey.ft.topic.reaction",
+            },
+          },
+          { 
+            terms: { 
+              reactionSubject: [uri]
+            } 
+          },
+        ],
+      },
+    },
+    sort: [{ "$metadata.indexedAt": { order: "asc" } }],
+  };
+
+  const { uris: reactionUris = [], isLoading: isReactionsLoading } =
+    useEsavQuery(`forumtest/${profile.did}/${uri}/OPreply/reactions`, topReactions!, {
+      enabled: !!topReactions,
+    });
+
+  const lastReplyUri =
+    repliesUris.length > 0 ? repliesUris[repliesUris.length - 1] : uri;
+
+  const [op, isOpLoading] = useCachedProfileJotai(parsed?.did);
+  const [lastReplyAuthor, isLastReplyAuthorLoading] = useCachedProfileJotai(
+    lastReplyUri && parseAtUri(lastReplyUri)?.did
+  );
+
+  const lastReply = useEsavDocument(lastReplyUri);
+
+  const participants = Array.from(
+    new Set(
+      [
+        parsed?.did,
+        ...repliesUris.map((i) => parseAtUri(i)?.did),
+      ].filter((did): did is string => typeof did === "string")
+    )
+  );
+
+
+  if (
+    !topic ||
+    isQueryLoading ||
+    isOpLoading ||
+    isLastReplyAuthorLoading ||
+    !op ||
+    isReactionsLoading 
+  ) {
+    return <TopicRowSkeleton />;
+  }
+
+  const rootAuthorProfile = op.profile;
+
+  const lastPostAuthorDid = lastReply?.doc["$metadata.did"];
+  const lastPostTimestamp = lastReply?.doc["$metadata.indexedAt"];
+  const lastPostAuthorProfile = lastReplyAuthor;
+
+  const lastPostAuthorAvatar =
+    lastPostAuthorProfile?.profile?.avatar?.ref?.$link &&
+    lastPostAuthorProfile.pdsUrl
+      ? `${lastPostAuthorProfile.pdsUrl}/xrpc/com.atproto.sync.getBlob?did=${lastPostAuthorDid}&cid=${lastPostAuthorProfile.profile.avatar.ref.$link}`
+      : undefined;
+
+  const post = topic.doc as PostDoc;
+
+  return (
+    <tr
+      onClick={() =>
+        navigate({
+          to: `/f/${forumHandle}/t/${post["$metadata.did"]}/${post["$metadata.rkey"]}`,
+        })
+      }
+      key={post["$metadata.uri"]}
+      className="bg-gray-800 hover:bg-gray-700/50 rounded-lg cursor-pointer transition-colors duration-150 group relative"
+    >
+      <td className="px-4 py-3 text-white rounded-l-lg min-w-52">
+        <Link
+          // @ts-ignore
+          to={`/f/${forumHandle}/t/${post["$metadata.did"]}/${post["$metadata.rkey"]}`}
+          className="stretched-link"
+        >
+          <span className="sr-only">View topic:</span>
+        </Link>
+        <div className="font-semibold text-gray-50 line-clamp-1">
+          {post.title}
+        </div>
+        <div className="text-sm text-gray-400">
+          by{" "}
+          <span className="font-medium text-gray-300">
+            {op.handle ? `@${op.handle}` : op?.did.slice(4, 12)}
+          </span>
+          , {getRelativeTimeString(post["$metadata.indexedAt"])}
+        </div>
+      </td>
+      <td className="px-4 py-3">
+        <div className="flex -space-x-2 justify-center">
+          {participants
+            .filter(Boolean)
+            .slice(0, 5)
+            .map((did) => (
+              <Participant key={did} did={did} />
+            ))}
+        </div>
+      </td>
+      <td className="px-4 py-3 text-center text-gray-100 font-medium">
+        {(repliesUris.length ?? 0) < 1 ? "-" : repliesUris.length}
+      </td>
+      <td className="px-4 py-3 text-center text-gray-300 font-medium">
+        {reactionUris ? <TopReactionc uris={reactionUris} /> : "-"}
+      </td>
+      <td className="px-4 py-3 text-gray-400 text-right rounded-r-lg">
+        <div className="flex items-center justify-end gap-2">
+          <div className="text-right">
+            <div className="text-sm font-semibold text-gray-100 line-clamp-1">
+              {lastPostAuthorProfile?.profile?.displayName ||
+                (lastPostAuthorProfile?.handle
+                  ? `@${lastPostAuthorProfile.handle}`
+                  : "...")}
+            </div>
+            <div className="text-xs">
+              {lastPostTimestamp && getRelativeTimeString(lastPostTimestamp)}
+            </div>
+          </div>
+          {lastPostAuthorAvatar ? (
+            <img
+              src={lastPostAuthorAvatar}
+              alt={lastPostAuthorProfile?.profile?.displayName}
+              className="w-8 h-8 rounded-full object-cover bg-gray-700 shrink-0"
+            />
+          ) : (
+            <div className="w-8 h-8 rounded-full bg-gray-700 shrink-0" />
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function TopReactionc({ uris }: { uris: string[] }) {
+  const resolvedReactions = useResolvedDocuments(uris);
+
+  const didEmojiSet = new Map<string, Set<string>>();
+  const emojiCounts = new Map<string, number>();
+
+  Object.values(resolvedReactions).forEach((doc) => {
+    if (!doc) return;
+
+    const did = doc["$metadata.did"];
+    const emoji = doc.$raw?.reactionEmoji as string;
+    if (!emoji) return;
+
+    if (!didEmojiSet.has(did)) {
+      didEmojiSet.set(did, new Set());
+    }
+
+    const emojiSet = didEmojiSet.get(did)!;
+    if (!emojiSet.has(emoji)) {
+      emojiSet.add(emoji);
+      emojiCounts.set(emoji, (emojiCounts.get(emoji) || 0) + 1);
+    }
+  });
+
+  // Step 2: Find top emoji
+  let topEmoji: string | null = null;
+  let topCount = 0;
+  for (const [emoji, count] of emojiCounts) {
+    if (count > topCount) {
+      topEmoji = emoji;
+      topCount = count;
+    }
+  }
+
+  if (!topEmoji) return null; // No valid reactions
+
+  return (
+    <div
+      className="flex items-center justify-center gap-1.5"
+      title={`${topCount} reactions`}
+    >
+      <span>{topEmoji}</span>
+      <span className="text-sm font-normal">{topCount}</span>
+    </div>
+  );
+}
+
+function Participant({ did }: { did: string }) {
+  const [user, isloading] = useCachedProfileJotai(did);
+  if (isloading || !user) {
+    return (
+      <div
+        key={did}
+        className="w-6 h-6 rounded-full border-2 border-gray-800 bg-gray-700"
+      />
+    );
+  }
+  const avatarUrl =
+    user.profile?.avatar?.ref?.$link && user.pdsUrl
+      ? `${user.pdsUrl}/xrpc/com.atproto.sync.getBlob?did=${did}&cid=${user.profile.avatar.ref.$link}`
+      : undefined;
+  return (
+    <img
+      key={did}
+      src={avatarUrl}
+      alt={`@${user?.handle || did.slice(0, 8)}`}
+      className="w-6 h-6 rounded-full border-2 border-gray-800 object-cover bg-gray-700"
+      title={`@${user?.handle || did.slice(0, 8)}`}
+    />
   );
 }

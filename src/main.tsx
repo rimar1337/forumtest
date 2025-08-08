@@ -10,8 +10,10 @@ import reportWebVitals from "./reportWebVitals.ts";
 import { AuthProvider } from "./providers/PassAuthProvider.tsx";
 import { PersistentStoreProvider } from "./providers/PersistentStoreProvider.tsx";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ESAVLiveProvider } from "./esav/ESAVLiveProvider.tsx";
 
 const queryClient = new QueryClient();
+const ESAV_WEBSOCKET_URL = 'wss://esav.whey.party/xrpc/party.whey.esav.esSync';
 
 // Create a new router instance
 const router = createRouter({
@@ -37,16 +39,18 @@ const rootElement = document.getElementById("app");
 if (rootElement && !rootElement.innerHTML) {
   const root = ReactDOM.createRoot(rootElement);
   root.render(
-    <StrictMode>
-      <PersistentStoreProvider>
-        <AuthProvider>
-          <QueryClientProvider client={queryClient}>
-            {/* Pass the router instance with the context to the provider */}
-            <RouterProvider router={router} />
-          </QueryClientProvider>
-        </AuthProvider>
-      </PersistentStoreProvider>
-    </StrictMode>
+    //<StrictMode>
+      <ESAVLiveProvider url={ESAV_WEBSOCKET_URL}>
+        <PersistentStoreProvider>
+          <AuthProvider>
+            <QueryClientProvider client={queryClient}>
+              {/* Pass the router instance with the context to the provider */}
+              <RouterProvider router={router} />
+            </QueryClientProvider>
+          </AuthProvider>
+        </PersistentStoreProvider>
+      </ESAVLiveProvider>
+    //</StrictMode>
   );
 }
 

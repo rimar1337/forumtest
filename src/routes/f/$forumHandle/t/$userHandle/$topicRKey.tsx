@@ -16,6 +16,13 @@ import {
 } from "@radix-ui/react-icons";
 import * as Popover from "@radix-ui/react-popover";
 import { useQuery, useQueryClient, QueryClient } from "@tanstack/react-query";
+import {
+  parseAtUri,
+  useCachedProfileJotai,
+  useEsavDocument,
+  useEsavQuery,
+  type Profile,
+} from "@/esav/hooks";
 
 type PostDoc = {
   "$metadata.uri": string;
@@ -58,172 +65,159 @@ type TopicData = {
 
 const EMOJI_SELECTION = ["👍", "❤️", "😂", "🔥", "🤔", "🎉", "🙏", "🤯"];
 
-const topicQueryOptions = (
-  queryClient: QueryClient,
-  userHandle: string,
-  topicRKey: string
-) => ({
-  queryKey: ["topic", userHandle, topicRKey],
-  queryFn: async (): Promise<TopicData> => {
-    const authorIdentity = await queryClient.fetchQuery({
-      queryKey: ["identity", userHandle],
-      queryFn: () => resolveIdentity({ didOrHandle: userHandle }),
-      staleTime: 1000 * 60 * 60 * 24,
-    });
-    if (!authorIdentity) throw new Error("Could not find topic author.");
+// const topicQueryOptions = (
+//   queryClient: QueryClient,
+//   userHandle: string,
+//   topicRKey: string
+// ) => ({
+//   queryKey: ["topic", userHandle, topicRKey],
+//   queryFn: async (): Promise<TopicData> => {
+//     const authorIdentity = await queryClient.fetchQuery({
+//       queryKey: ["identity", userHandle],
+//       queryFn: () => resolveIdentity({ didOrHandle: userHandle }),
+//       staleTime: 1000 * 60 * 60 * 24,
+//     });
+//     if (!authorIdentity) throw new Error("Could not find topic author.");
 
-    const topicUri = `at://${authorIdentity.did}/com.example.ft.topic.post/${topicRKey}`;
+//     const topicUri = `at://${authorIdentity.did}/party.whey.ft.topic.post/${topicRKey}`;
 
-    const [postRes, repliesRes] = await Promise.all([
-      esavQuery<{ hits: { hits: { _source: PostDoc }[] } }>({
-        query: { term: { "$metadata.uri": topicUri } },
-        size: 1,
-      }),
-      esavQuery<{ hits: { hits: { _source: PostDoc }[] } }>({
-        query: { term: { root: topicUri } },
-        sort: [{ "$metadata.indexedAt": "asc" }],
-        size: 100,
-      }),
-    ]);
+//     const [postRes, repliesRes] = await Promise.all([
+//       esavQuery<{ hits: { hits: { _source: PostDoc }[] } }>({
+//         query: { term: { "$metadata.uri": topicUri } },
+//         size: 1,
+//       }),
+//       esavQuery<{ hits: { hits: { _source: PostDoc }[] } }>({
+//         query: { term: { root: topicUri } },
+//         sort: [{ "$metadata.indexedAt": "asc" }],
+//         size: 100,
+//       }),
+//     ]);
 
-    if (postRes.hits.hits.length === 0) throw new Error("Topic not found.");
-    const mainPost = postRes.hits.hits[0]._source;
-    const fetchedReplies = repliesRes.hits.hits.map((h) => h._source);
-    const allPosts = [mainPost, ...fetchedReplies];
+//     if (postRes.hits.hits.length === 0) throw new Error("Topic not found.");
+//     const mainPost = postRes.hits.hits[0]._source;
+//     const fetchedReplies = repliesRes.hits.hits.map((h) => h._source);
+//     const allPosts = [mainPost, ...fetchedReplies];
 
-    const postUris = allPosts.map((p) => p["$metadata.uri"]);
-    const authorDids = [...new Set(allPosts.map((p) => p["$metadata.did"]))];
+//     const postUris = allPosts.map((p) => p["$metadata.uri"]);
+//     const authorDids = [...new Set(allPosts.map((p) => p["$metadata.did"]))];
 
-    const [reactionsRes, footersRes, pdsProfiles] = await Promise.all([
-      esavQuery<{ hits: { hits: { _source: ReactionDoc }[] } }>({
-        query: {
-          bool: {
-            must: [
-              {
-                term: {
-                  "$metadata.collection": "com.example.ft.topic.reaction",
-                },
-              },
-              { terms: { reactionSubject: postUris } },
-            ],
-          },
-        },
-        _source: ["reactionSubject", "reactionEmoji"],
-        size: 1000,
-      }),
-      esavQuery<{
-        hits: {
-          hits: { _source: { "$metadata.did": string; footer: string } }[];
-        };
-      }>({
-        query: {
-          bool: {
-            must: [
-              { term: { $type: "com.example.ft.user.profile" } },
-              { terms: { "$metadata.did": authorDids } },
-            ],
-          },
-        },
-        _source: ["$metadata.did", "footer"],
-        size: authorDids.length,
-      }),
-      Promise.all(
-        authorDids.map(async (did) => {
-          try {
-            const identity = await queryClient.fetchQuery({
-              queryKey: ["identity", did],
-              queryFn: () => resolveIdentity({ didOrHandle: did }),
-              staleTime: 1000 * 60 * 60 * 24,
-            });
+//     const [reactionsRes, footersRes, pdsProfiles] = await Promise.all([
+//       esavQuery<{ hits: { hits: { _source: ReactionDoc }[] } }>({
+//         query: {
+//           bool: {
+//             must: [
+//               {
+//                 term: {
+//                   "$metadata.collection": "party.whey.ft.topic.reaction",
+//                 },
+//               },
+//               { terms: { reactionSubject: postUris } },
+//             ],
+//           },
+//         },
+//         _source: ["reactionSubject", "reactionEmoji"],
+//         size: 1000,
+//       }),
+//       esavQuery<{
+//         hits: {
+//           hits: { _source: { "$metadata.did": string; footer: string } }[];
+//         };
+//       }>({
+//         query: {
+//           bool: {
+//             must: [
+//               { term: { $type: "party.whey.ft.user.profile" } },
+//               { terms: { "$metadata.did": authorDids } },
+//             ],
+//           },
+//         },
+//         _source: ["$metadata.did", "footer"],
+//         size: authorDids.length,
+//       }),
+//       Promise.all(
+//         authorDids.map(async (did) => {
+//           try {
+//             const identity = await queryClient.fetchQuery({
+//               queryKey: ["identity", did],
+//               queryFn: () => resolveIdentity({ didOrHandle: did }),
+//               staleTime: 1000 * 60 * 60 * 24,
+//             });
 
-            if (!identity?.pdsUrl) {
-              console.warn(
-                `Could not resolve PDS for ${did}, cannot fetch profile.`
-              );
-              return { did, profile: null };
-            }
+//             if (!identity?.pdsUrl) {
+//               console.warn(
+//                 `Could not resolve PDS for ${did}, cannot fetch profile.`
+//               );
+//               return { did, profile: null };
+//             }
 
-            const profileUrl = `${identity.pdsUrl}/xrpc/com.atproto.repo.getRecord?repo=${did}&collection=app.bsky.actor.profile&rkey=self`;
-            const profileRes = await fetch(profileUrl);
+//             const profileUrl = `${identity.pdsUrl}/xrpc/com.atproto.repo.getRecord?repo=${did}&collection=app.bsky.actor.profile&rkey=self`;
+//             const profileRes = await fetch(profileUrl);
 
-            if (!profileRes.ok) {
-              console.warn(
-                `Failed to fetch profile for ${did} from ${identity.pdsUrl}. Status: ${profileRes.status}`
-              );
-              return { did, profile: null };
-            }
+//             if (!profileRes.ok) {
+//               console.warn(
+//                 `Failed to fetch profile for ${did} from ${identity.pdsUrl}. Status: ${profileRes.status}`
+//               );
+//               return { did, profile: null };
+//             }
 
-            const profileData = await profileRes.json();
-            return { did, profile: profileData.value };
-          } catch (e) {
-            console.error(
-              `Error during decentralized profile fetch for ${did}:`,
-              e
-            );
-            return { did, profile: null };
-          }
-        })
-      ),
-    ]);
+//             const profileData = await profileRes.json();
+//             return { did, profile: profileData.value };
+//           } catch (e) {
+//             console.error(
+//               `Error during decentralized profile fetch for ${did}:`,
+//               e
+//             );
+//             return { did, profile: null };
+//           }
+//         })
+//       ),
+//     ]);
 
-    const reactionsByPostUri = reactionsRes.hits.hits.reduce(
-      (acc, hit) => {
-        const reaction = hit._source;
-        (acc[reaction.reactionSubject] =
-          acc[reaction.reactionSubject] || []).push(reaction);
-        return acc;
-      },
-      {} as Record<string, ReactionDoc[]>
-    );
+//     const reactionsByPostUri = reactionsRes.hits.hits.reduce(
+//       (acc, hit) => {
+//         const reaction = hit._source;
+//         (acc[reaction.reactionSubject] =
+//           acc[reaction.reactionSubject] || []).push(reaction);
+//         return acc;
+//       },
+//       {} as Record<string, ReactionDoc[]>
+//     );
 
-    const footersByDid = footersRes.hits.hits.reduce(
-      (acc, hit) => {
-        acc[hit._source["$metadata.did"]] = hit._source.footer;
-        return acc;
-      },
-      {} as Record<string, string>
-    );
+//     const footersByDid = footersRes.hits.hits.reduce(
+//       (acc, hit) => {
+//         acc[hit._source["$metadata.did"]] = hit._source.footer;
+//         return acc;
+//       },
+//       {} as Record<string, string>
+//     );
 
-    const authors: Record<string, AuthorInfo> = {};
-    await Promise.all(
-      authorDids.map(async (did) => {
-        const identity = await queryClient.fetchQuery({
-          queryKey: ["identity", did],
-          queryFn: () => resolveIdentity({ didOrHandle: did }),
-          staleTime: 1000 * 60 * 60 * 24,
-        });
-        if (!identity) return;
-        const pdsProfile = pdsProfiles.find((p) => p.did === did)?.profile;
-        authors[did] = {
-          ...identity,
-          displayName: pdsProfile?.displayName,
-          avatarCid: pdsProfile?.avatar?.ref?.["$link"],
-          footer: footersByDid[did],
-        };
-      })
-    );
+//     const authors: Record<string, AuthorInfo> = {};
+//     await Promise.all(
+//       authorDids.map(async (did) => {
+//         const identity = await queryClient.fetchQuery({
+//           queryKey: ["identity", did],
+//           queryFn: () => resolveIdentity({ didOrHandle: did }),
+//           staleTime: 1000 * 60 * 60 * 24,
+//         });
+//         if (!identity) return;
+//         const pdsProfile = pdsProfiles.find((p) => p.did === did)?.profile;
+//         authors[did] = {
+//           ...identity,
+//           displayName: pdsProfile?.displayName,
+//           avatarCid: pdsProfile?.avatar?.ref?.["$link"],
+//           footer: footersByDid[did],
+//         };
+//       })
+//     );
 
-    return { posts: allPosts, authors, reactions: reactionsByPostUri };
-  },
-});
+//     return { posts: allPosts, authors, reactions: reactionsByPostUri };
+//   },
+// });
+
 export const Route = createFileRoute(
   "/f/$forumHandle/t/$userHandle/$topicRKey"
 )({
-  loader: ({ context: { queryClient }, params }) =>
-    queryClient.ensureQueryData(
-      topicQueryOptions(
-        queryClient,
-        decodeURIComponent(params.userHandle),
-        params.topicRKey
-      )
-    ),
   component: ForumTopic,
-  pendingComponent: TopicPageSkeleton,
-  errorComponent: ({ error }) => (
-    <div className="text-center text-red-500 pt-20 text-lg">
-      Error: {(error as Error).message}
-    </div>
-  ),
 });
 
 export function PostCardSkeleton() {
@@ -276,13 +270,13 @@ function TopicPageSkeleton() {
   );
 }
 
-function UserInfoColumn({ author }: { author: AuthorInfo | null }) {
+function UserInfoColumn({ author }: { author: Profile | null }) {
   const avatarUrl =
-    author?.avatarCid && author?.pdsUrl
-      ? `${author.pdsUrl}/xrpc/com.atproto.sync.getBlob?did=${author.did}&cid=${author.avatarCid}`
+    author?.profile.avatar?.ref.$link && author?.pdsUrl
+      ? `${author.pdsUrl}/xrpc/com.atproto.sync.getBlob?did=${author.did}&cid=${author?.profile.avatar?.ref.$link}`
       : undefined;
 
-  const authorDisplayName = author?.displayName || author?.handle || "Unknown";
+  const authorDisplayName = author?.profile.displayName || author?.handle || "Unknown";
   const authorHandle = author?.handle ? `@${author.handle}` : "did:...";
 
   return (
@@ -302,11 +296,11 @@ function UserInfoColumn({ author }: { author: AuthorInfo | null }) {
         {authorDisplayName}
       </div>
       <div className="break-words whitespace-normal">{authorHandle}</div>
-      {author?.footer && (
+      {/* {author?.footer && (
         <div className="border-t border-gray-700/80 mt-4 pt-3 text-xs text-gray-500 text-left whitespace-pre-wrap break-words">
           {author.footer}
         </div>
-      )}
+      )} */}
     </div>
   );
 }
@@ -340,19 +334,21 @@ function Reactions({ reactions }: { reactions: ReactionDoc[] }) {
 }
 
 export function PostCard({
+  forumdid,
   agent,
   post,
-  author,
-  reactions,
+  //author,
+  //reactions,
   index,
   onSetReplyParent,
   onNewReaction,
   isCreatingReaction,
 }: {
+  forumdid: string;
   agent: AtpAgent | null;
   post: PostDoc;
-  author: AuthorInfo | null;
-  reactions: ReactionDoc[];
+  //author: AuthorInfo | null;
+  //reactions: ReactionDoc[];
   index: number;
   onSetReplyParent: (post: PostDoc) => void;
   onNewReaction: (post: PostDoc, emoji: string) => Promise<void>;
@@ -360,6 +356,54 @@ export function PostCard({
 }) {
   const postUri = post["$metadata.uri"];
   const postDate = new Date(post["$metadata.indexedAt"]);
+  const [author, authorloading] = useCachedProfileJotai(post["$metadata.did"]);
+
+  const reactionsquery = {
+    query: {
+      bool: {
+        must: [
+          {
+            term: {
+              "$metadata.collection": "party.whey.ft.topic.reaction",
+            },
+          },
+          { 
+            terms: { 
+              reactionSubject: [post["$metadata.uri"]]
+            } 
+          },
+        ],
+      },
+    },
+    sort: [{ "$metadata.indexedAt": { order: "asc" } }],
+  };
+
+  const { uris: reactionUris = [], isLoading: isReactionsLoading } =
+    useEsavQuery(`forumtest/${forumdid}/${post["$metadata.uri"]}/reactions`, reactionsquery!, {
+      enabled: !!reactionsquery,
+    });
+  
+  function isReactionDoc(doc: unknown): doc is ReactionDoc {
+    return (
+      typeof doc === 'object' &&
+      doc !== null &&
+      'reactionEmoji' in doc &&
+      'reactionSubject' in doc
+    );
+  }
+
+  const docsMap = useEsavDocument(reactionUris);
+  const reactions = reactionUris
+  .map((uri) => docsMap?.[uri]?.doc as unknown)
+  .filter(isReactionDoc);
+
+  if (!author || authorloading) {
+    return (
+      <span>
+        loading
+      </span>
+    )
+  }
 
   return (
     <div
@@ -441,17 +485,56 @@ export function ForumTopic() {
   const { forumHandle, userHandle, topicRKey } = useParams({
     from: "/f/$forumHandle/t/$userHandle/$topicRKey",
   });
+  const [forum, isforumdidLoading] = useCachedProfileJotai(forumHandle);
+  const [op, isOpdidLoading] = useCachedProfileJotai(userHandle);
+
+  const uri = useMemo(() => {
+    return `at://${op?.did}/party.whey.ft.topic.post/${topicRKey}`;
+  }, [op?.did]);
   const { agent, loading: authLoading } = useAuth();
-  const queryClient = useQueryClient();
-  const initialData = Route.useLoaderData();
+  //const topic = useEsavDocument(uri);
+  //const parsed = parseAtUri(uri);
 
-  const { data, isError, error } = useQuery({
-    ...topicQueryOptions(queryClient, userHandle, topicRKey),
-    initialData,
-    refetchInterval: 30 * 1000, // refresh every half minute
-  });
+  const opQuery = {
+    query: {
+      term: {
+        "$metadata.uri": uri,
+      },
+    },
+    size: 1,
+    sort: [{ "$metadata.indexedAt": { order: "asc" } }],
+  };
 
-  const { posts, authors, reactions } = data;
+  const fullRepliesQuery = {
+    query: {
+      bool: { must: [{ term: { root: uri } }] },
+    },
+    sort: [{ "$metadata.indexedAt": { order: "asc" } }],
+  };
+
+  const { uris: opUris = [], isLoading: isopQueryLoading } = useEsavQuery(
+    `forumtest/${op?.did}/${uri}`,
+    opQuery!,
+    {
+      enabled: !!opQuery && !!op,
+    }
+  );
+
+  const { uris: repliesUris = [], isLoading: isQueryLoading } = useEsavQuery(
+    `forumtest/${op?.did}/${uri}/replies`,
+    fullRepliesQuery!,
+    {
+      enabled: !!fullRepliesQuery && !!op,
+    }
+  );
+
+  const oppost = useEsavDocument(uri);
+  const docsMap = useEsavDocument(repliesUris);
+  const posts = useMemo(() => { return [
+    oppost?.doc as PostDoc,
+    ...repliesUris.map((uri) => docsMap?.[uri]?.doc as PostDoc),
+  ].filter((doc): doc is PostDoc => !!doc);
+  }, [oppost, docsMap]);
 
   const [replyText, setReplyText] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -464,12 +547,6 @@ export function ForumTopic() {
     document.getElementById("reply-box")?.focus();
   };
 
-  const invalidateTopicQuery = () => {
-    queryClient.invalidateQueries({
-      queryKey: ["topic", userHandle, topicRKey],
-    });
-  };
-
   const handleCreateReaction = async (post: PostDoc, emoji: string) => {
     if (!agent?.did || isCreatingReaction) return;
     setIsCreatingReaction(true);
@@ -477,15 +554,15 @@ export function ForumTopic() {
     try {
       await agent.com.atproto.repo.createRecord({
         repo: agent.did,
-        collection: "com.example.ft.topic.reaction",
+        collection: "party.whey.ft.topic.reaction",
         record: {
-          $type: "com.example.ft.topic.reaction",
+          $type: "party.whey.ft.topic.reaction",
           reactionEmoji: emoji,
           subject: post["$metadata.uri"],
           createdAt: new Date().toISOString(),
         },
       });
-      invalidateTopicQuery();
+      //invalidateTopicQuery();
     } catch (e) {
       console.error("Failed to create reaction", e);
       setMutationError("Failed to post reaction. Please try again.");
@@ -502,20 +579,19 @@ export function ForumTopic() {
     try {
       const rootPost = posts[0];
       const parentPost = replyingTo || rootPost;
-      const identity = await queryClient.fetchQuery({
-        queryKey: ["identity", forumHandle],
-        queryFn: () => resolveIdentity({ didOrHandle: forumHandle }),
-        staleTime: 1000 * 60 * 60 * 24,
-      });
+      const trimmed = forumHandle.startsWith("@")
+        ? forumHandle.slice(1)
+        : forumHandle;
+      const identity = forum;
       const forumDid = identity?.did;
       if (!forumDid) {
         throw new Error("Could not resolve forum handle to DID.");
       }
       await agent.com.atproto.repo.createRecord({
         repo: agent.did,
-        collection: "com.example.ft.topic.post",
+        collection: "party.whey.ft.topic.post",
         record: {
-          $type: "com.example.ft.topic.post",
+          $type: "party.whey.ft.topic.post",
           text: replyText,
           forum: forumDid,
           reply: {
@@ -533,20 +609,25 @@ export function ForumTopic() {
       });
       setReplyText("");
       setReplyingTo(null);
-      invalidateTopicQuery();
+      //invalidateTopicQuery();
     } catch (e) {
       setMutationError(`Failed to post reply: ${(e as Error).message}`);
     } finally {
       setIsSubmitting(false);
     }
   };
-
-  if (isError)
+  if (!forum?.did || isOpdidLoading || isQueryLoading || isforumdidLoading || isopQueryLoading) {
     return (
-      <div className="text-red-500 p-8 text-center">
-        Error: {(error as Error).message}
-      </div>
-    );
+      <TopicPageSkeleton />
+    )
+  }
+
+  // if (isError)
+  //   return (
+  //     <div className="text-red-500 p-8 text-center">
+  //       Error: {(error as Error).message}
+  //     </div>
+  //   );
 
   const topicPost = posts[0];
   const postIndexBeingRepliedTo = replyingTo
@@ -574,11 +655,12 @@ export function ForumTopic() {
 
         {posts.map((post, index) => (
           <PostCard
+            forumdid={forum?.did}
             agent={agent}
             key={post["$metadata.uri"]}
             post={post}
-            author={authors[post["$metadata.did"]]}
-            reactions={reactions[post["$metadata.uri"]] || []}
+            //author={authors[post["$metadata.did"]]}
+            //reactions={reactions[post["$metadata.uri"]] || []}
             index={index}
             onSetReplyParent={handleSetReplyParent}
             onNewReaction={handleCreateReaction}

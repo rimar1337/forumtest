@@ -18,6 +18,7 @@ import {
   PostCard,
   PostCardSkeleton,
 } from "@/routes/f/$forumHandle/t/$userHandle/$topicRKey";
+import { useCachedProfileJotai } from "@/esav/hooks";
 
 type PostDoc = {
   "$metadata.uri": string;
@@ -71,6 +72,7 @@ interface SearchResultCardProps {
 function SearchResultCard({ post, ...rest }: SearchResultCardProps) {
   const navigate = useNavigate();
   const [forumHandle, setForumHandle] = useState<string | undefined>(undefined);
+  const [did, loadinger] = useCachedProfileJotai(forumHandle)
   const { get, set } = usePersistentStore();
 
   const thing = post["forum"]// || new AtUripost["root"]
@@ -162,7 +164,7 @@ function SearchResultCard({ post, ...rest }: SearchResultCardProps) {
         )}
       </div>
 
-      <PostCard {...rest} post={post} onSetReplyParent={handleNavigateToPost} />
+      {did && (<PostCard forumdid={did.did} {...rest} post={post} onSetReplyParent={handleNavigateToPost} />)}
     </div>
   );
 }
@@ -208,7 +210,7 @@ export function SearchPage() {
               },
               filter: [
                 {
-                  term: { "$metadata.collection": "com.example.ft.topic.post" },
+                  term: { "$metadata.collection": "party.whey.ft.topic.post" },
                 },
               ],
             },
@@ -238,7 +240,7 @@ export function SearchPage() {
                 must: [
                   {
                     term: {
-                      "$metadata.collection": "com.example.ft.topic.reaction",
+                      "$metadata.collection": "party.whey.ft.topic.reaction",
                     },
                   },
                 ],
@@ -263,7 +265,7 @@ export function SearchPage() {
           }>({
             query: {
               bool: {
-                must: [{ term: { $type: "com.example.ft.user.profile" } }],
+                must: [{ term: { $type: "party.whey.ft.user.profile" } }],
                 filter: [{ terms: { "$metadata.did": allDids } }],
               },
             },
@@ -349,9 +351,9 @@ export function SearchPage() {
       const date = new Date().toISOString();
       const response = await agent.com.atproto.repo.createRecord({
         repo: agent.did,
-        collection: "com.example.ft.topic.reaction",
+        collection: "party.whey.ft.topic.reaction",
         record: {
-          $type: "com.example.ft.topic.reaction",
+          $type: "party.whey.ft.topic.reaction",
           reactionEmoji: emoji,
           subject: postUri,
           createdAt: date,
@@ -359,7 +361,7 @@ export function SearchPage() {
       });
       const uri = new AtUri(response.data.uri)
       const newReaction: ReactionDoc = {
-        "$metadata.collection": "com.example.ft.topic.reaction",
+        "$metadata.collection": "party.whey.ft.topic.reaction",
         "$metadata.uri": response.data.uri,
         "$metadata.cid": response.data.cid,
         "$metadata.did": agent.did,

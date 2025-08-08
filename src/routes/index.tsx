@@ -3,6 +3,8 @@ import { useQuery, useQueryClient, QueryClient } from "@tanstack/react-query";
 import "../App.css";
 import { esavQuery } from "@/helpers/esquery";
 import { resolveIdentity } from "@/helpers/cachedidentityresolver";
+import { useCachedProfileJotai, useEsavDocument, useEsavQuery } from "@/esav/hooks";
+import type { QueryDoc } from "@/esav/types";
 
 type ForumDoc = {
   "$metadata.uri": string;
@@ -42,7 +44,7 @@ const forumsQueryOptions = (queryClient: QueryClient) => ({
           must: [
             {
               term: {
-                "$metadata.collection": "com.example.ft.forum.definition",
+                "$metadata.collection": "party.whey.ft.forum.definition",
               },
             },
             { term: { "$metadata.rkey": "self" } },
@@ -87,13 +89,7 @@ const forumsQueryOptions = (queryClient: QueryClient) => ({
 });
 
 export const Route = createFileRoute("/")({
-  loader: ({ context: { queryClient } }) =>
-    queryClient.ensureQueryData(forumsQueryOptions(queryClient)),
   component: Home,
-  pendingComponent: ForumGridSkeleton,
-  errorComponent: ({ error }) => (
-    <div className="text-red-500 p-4">Error: {(error as Error).message}</div>
-  ),
 });
 
 function ForumGridSkeleton() {
@@ -138,13 +134,27 @@ function ForumCardSkeleton() {
 }
 
 function Home() {
-  const initialData = Route.useLoaderData();
-  const queryClient = useQueryClient();
+  const homeQuery = {
+    query: {
+      bool: {
+        must: [
+          {
+            term: {
+              "$metadata.collection": "party.whey.ft.forum.definition",
+            },
+          },
+          { term: { "$metadata.rkey": "self" } },
+        ],
+      },
+    },
+    sort: [{ '$metadata.indexedAt': 'desc' }],
+    size: 50,
+  };
+  const { uris, isLoading } = useEsavQuery("forumtest", homeQuery);
 
-  const { data: forums }: { data: ResolvedForum[] } = useQuery({
-    ...forumsQueryOptions(queryClient),
-    initialData,
-  });
+  if (isLoading) {
+    return <ForumGridSkeleton />
+  }
 
   return (
     <div className="w-full flex flex-col items-center">
@@ -155,78 +165,86 @@ function Home() {
           </div>
 
           <div className="mt-4 w-full forum-grid">
-            {forums.map((forum) => {
-              const did = forum?.["$metadata.did"];
-              const { resolvedIdentity } = forum;
-              if (!resolvedIdentity) return null;
-
-              const cidBanner = forum?.$raw?.banner?.ref?.$link;
-              const cidAvatar = forum?.$raw?.avatar?.ref?.$link;
-
-              const bannerUrl =
-                cidBanner && resolvedIdentity
-                  ? `${resolvedIdentity.pdsUrl}/xrpc/com.atproto.sync.getBlob?did=${did}&cid=${cidBanner}`
-                  : null;
-
-              const avatarUrl =
-                cidAvatar && resolvedIdentity
-                  ? `${resolvedIdentity.pdsUrl}/xrpc/com.atproto.sync.getBlob?did=${did}&cid=${cidAvatar}`
-                  : null;
-
-              return (
-                <Link
-                  // @ts-ignore
-                  to={`/f/@${resolvedIdentity.handle}`}
-                  className="block"
-                  key={forum?.$metadata?.uri}
-                >
-                  <div
-                    key={forum?.$metadata?.uri}
-                    className="relative bg-zinc-900 rounded-2xl overflow-hidden border border-zinc-800 shadow-sm aspect-video hover:border-blue-500/50 transition-all duration-200"
-                  >
-                    {bannerUrl && (
-                      <div
-                        className="absolute inset-0 bg-cover bg-center"
-                        style={{ backgroundImage: `url(${bannerUrl})` }}
-                      />
-                    )}
-                    <div className="absolute inset-0 bg-black/60" />
-                    <div className="relative z-10 flex flex-col justify-between h-full p-5">
-                      <div className="flex justify-between items-start gap-4">
-                        <div className="flex flex-col">
-                          {resolvedIdentity?.handle && (
-                            <div className="text-blue-300 text-base font-mono mb-1">
-                              /f/@{resolvedIdentity.handle}
-                            </div>
-                          )}
-                          <div className="text-white text-2xl font-bold leading-tight">
-                            {forum.displayName || "Unnamed Forum"}
-                          </div>
-                        </div>
-                        {avatarUrl && (
-                          <img
-                            src={avatarUrl}
-                            alt="Avatar"
-                            className="w-12 h-12 rounded-full object-cover border border-zinc-700 flex-shrink-0"
-                          />
-                        )}
-                      </div>
-                      <div className="flex flex-col gap-2 mt-4">
-                        <div className="text-sm text-gray-200 line-clamp-2">
-                          {forum.description || "No description available."}
-                        </div>
-                        <div className="text-xs text-gray-400 font-medium">
-                          0 members · ~0 topics · Active a while ago
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </Link>
-              );
-            })}
+            {uris.map((uri) => (
+              <ForumItem key={uri} uri={uri} />
+            ))}
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+function ForumItem({uri}:{uri:string}){
+  const data = useEsavDocument(uri);
+  const did = data?.doc?.["$metadata.did"];
+  const [profile, isLoading] = useCachedProfileJotai(did);
+    if (!data) return null
+  const forum = data.doc;
+  const resolvedIdentity = profile;
+
+  const cidBanner = resolvedIdentity?.profile.banner?.ref?.$link;
+  const cidAvatar = resolvedIdentity?.profile.avatar?.ref?.$link;
+
+  const bannerUrl = 
+    cidBanner && resolvedIdentity
+      ? `${resolvedIdentity.pdsUrl}/xrpc/com.atproto.sync.getBlob?did=${did}&cid=${cidBanner}`
+      : null;
+
+  const avatarUrl =
+    cidAvatar && resolvedIdentity
+      ? `${resolvedIdentity.pdsUrl}/xrpc/com.atproto.sync.getBlob?did=${did}&cid=${cidAvatar}`
+      : null;
+
+
+  return (
+    <Link
+      // @ts-expect-error force "@" instead of the encoded one
+      to={`/f/@${resolvedIdentity?.handle}`}
+      className="block"
+      key={forum["$metadata.uri"]}
+    >
+      <div
+        key={forum["$metadata.uri"]}
+        className="relative bg-zinc-900 rounded-2xl overflow-hidden border border-zinc-800 shadow-sm aspect-video hover:border-blue-500/50 transition-all duration-200"
+      >
+        {bannerUrl && (
+          <div
+            className="absolute inset-0 bg-cover bg-center"
+            style={{ backgroundImage: `url(${bannerUrl})` }}
+          />
+        )}
+        <div className="absolute inset-0 bg-black/60" />
+        <div className="relative z-10 flex flex-col justify-between h-full p-5">
+          <div className="flex justify-between items-start gap-4">
+            <div className="flex flex-col">
+              {resolvedIdentity?.handle && (
+                <div className="text-blue-300 text-base font-mono mb-1">
+                  /f/@{resolvedIdentity.handle}
+                </div>
+              )}
+              <div className="text-white text-2xl font-bold leading-tight">
+                {resolvedIdentity?.profile.displayName || "Unnamed Forum"}
+              </div>
+            </div>
+            {avatarUrl && (
+              <img
+                src={avatarUrl}
+                alt="Avatar"
+                className="w-12 h-12 rounded-full object-cover border border-zinc-700 flex-shrink-0"
+              />
+            )}
+          </div>
+          <div className="flex flex-col gap-2 mt-4">
+            <div className="text-sm text-gray-200 line-clamp-2">
+              {String(forum.description || "No description available.")}
+            </div>
+            <div className="text-xs text-gray-400 font-medium">
+              0 members · ~0 topics · Active a while ago
+            </div>
+          </div>
+        </div>
+      </div>
+    </Link>
   );
 }

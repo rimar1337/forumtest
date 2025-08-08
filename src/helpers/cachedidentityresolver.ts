@@ -3,7 +3,6 @@ export type ResolvedIdentity =
       handle: string
       did: string
       pdsUrl: string
-      bskyPds: boolean
     }
   | undefined
 const HANDLE_DID_CACHE_TIMEOUT = 60 * 60 * 1000; // 1 hour
