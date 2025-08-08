@@ -6,7 +6,8 @@ import {
   queryStateFamily,
   websocketAtom,
   websocketStatusAtom,
-  addLogEntryAtom
+  addLogEntryAtom,
+  queryCacheAtom
 } from './atoms';
 import type { EsavDocument, QueryDoc, SubscribeMessage, UnsubscribeMessage } from './types';
 import { atomWithStorage } from 'jotai/utils';
@@ -34,7 +35,27 @@ export function useEsavQuery(
   const ws = useAtomValue(websocketAtom);
   const addLog = useSetAtom(addLogEntryAtom);
   const wsStatus = useAtomValue(websocketStatusAtom);
-  const queryState = useAtomValue(queryStateFamily(queryId));
+  //const queryState = useAtomValue(queryStateFamily(queryId));
+  const liveQueryState = useAtomValue(queryStateFamily(queryId));
+  const [cache, setCache] = useAtom(queryCacheAtom);
+  const cachedQueryState = cache[queryId];
+  const queryState = liveQueryState ?? cachedQueryState;
+  useEffect(() => {
+    // If we receive valid new data from the live query, update our cache.
+    if (liveQueryState?.result) {
+      setCache((prevCache) => {
+        // Avoid unnecessary updates if the data is identical
+        if (prevCache[queryId] === liveQueryState) {
+          return prevCache;
+        }
+        return {
+          ...prevCache,
+          [queryId]: liveQueryState,
+        };
+      });
+    }
+  }, [liveQueryState, queryId, setCache]);
+
   const allDocuments = useAtomValue(documentsAtom);
 
   const { enabled = true } = options;
@@ -87,7 +108,7 @@ export function useEsavQuery(
         }
       });
     };
-  }, [queryId, stringifiedEsQuery, enabled, ws, wsStatus, setActiveSubscriptions]);
+  }, [queryId, stringifiedEsQuery, enabled, ws, wsStatus, setActiveSubscriptions, addLog]);
 
 
   const hydratedData = useMemo(() => {
@@ -97,7 +118,8 @@ export function useEsavQuery(
       .filter(Boolean);
   }, [queryState?.result, allDocuments]);
   
-  const isLoading = wsStatus !== 'open' || queryState === null;
+  //const isLoading = wsStatus !== 'open' || queryState === null;
+  const isLoading = !queryState;
 
   return {
     data: hydratedData,

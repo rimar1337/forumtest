@@ -67,3 +67,5 @@ export const addLogEntryAtom = atom(
     set(logEntriesAtom, newLog);
   }
 );
+
+export const queryCacheAtom = atom<Record<string, QueryState>>({});
