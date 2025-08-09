@@ -5,14 +5,14 @@ import {
   Link,
 } from "@tanstack/react-router";
 import { useEffect, useState, useCallback, useMemo } from "react";
-import { useAuth } from "@/providers/PassAuthProvider";
+import { useAuth } from "@/providers/OAuthProvider";
 import { usePersistentStore } from "@/providers/PersistentStoreProvider";
 import { esavQuery } from "@/helpers/esquery";
 import {
   cachedResolveIdentity,
   type ResolvedIdentity,
 } from "@/helpers/cachedidentityresolver";
-import AtpAgent, { AtUri } from "@atproto/api";
+import AtpAgent, { Agent, AtUri } from "@atproto/api";
 import { ArrowRightIcon } from "@radix-ui/react-icons";
 import {
   PostCard,
@@ -60,7 +60,7 @@ export const Route = createFileRoute("/search")({
 });
 
 interface SearchResultCardProps {
-  agent: AtpAgent | null;
+  agent: Agent | null;
   post: PostDoc;
   author: AuthorInfo | null;
   reactions: ReactionDoc[];
@@ -174,7 +174,8 @@ let authors: Record<string, AuthorInfo> = {};
 export function SearchPage() {
   const { q } = useSearch({ from: "/search" });
 
-  const { agent, loading: authLoading } = useAuth();
+  const { agent, status } = useAuth();
+  const authLoading = status === 'loading'
   const { get, set } = usePersistentStore();
 
   const [results, setResults] = useState<PostDoc[]>([]);

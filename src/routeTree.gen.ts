@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SearchRouteImport } from './routes/search'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as CallbackIndexRouteImport } from './routes/callback/index'
 import { Route as FForumHandleRouteImport } from './routes/f/$forumHandle'
 import { Route as FForumHandleIndexRouteImport } from './routes/f/$forumHandle/index'
 import { Route as FForumHandleTUserHandleTopicRKeyRouteImport } from './routes/f/$forumHandle/t/$userHandle/$topicRKey'
@@ -23,6 +24,11 @@ const SearchRoute = SearchRouteImport.update({
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CallbackIndexRoute = CallbackIndexRouteImport.update({
+  id: '/callback/',
+  path: '/callback/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const FForumHandleRoute = FForumHandleRouteImport.update({
@@ -46,12 +52,14 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/search': typeof SearchRoute
   '/f/$forumHandle': typeof FForumHandleRouteWithChildren
+  '/callback': typeof CallbackIndexRoute
   '/f/$forumHandle/': typeof FForumHandleIndexRoute
   '/f/$forumHandle/t/$userHandle/$topicRKey': typeof FForumHandleTUserHandleTopicRKeyRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/search': typeof SearchRoute
+  '/callback': typeof CallbackIndexRoute
   '/f/$forumHandle': typeof FForumHandleIndexRoute
   '/f/$forumHandle/t/$userHandle/$topicRKey': typeof FForumHandleTUserHandleTopicRKeyRoute
 }
@@ -60,6 +68,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/search': typeof SearchRoute
   '/f/$forumHandle': typeof FForumHandleRouteWithChildren
+  '/callback/': typeof CallbackIndexRoute
   '/f/$forumHandle/': typeof FForumHandleIndexRoute
   '/f/$forumHandle/t/$userHandle/$topicRKey': typeof FForumHandleTUserHandleTopicRKeyRoute
 }
@@ -69,12 +78,14 @@ export interface FileRouteTypes {
     | '/'
     | '/search'
     | '/f/$forumHandle'
+    | '/callback'
     | '/f/$forumHandle/'
     | '/f/$forumHandle/t/$userHandle/$topicRKey'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/search'
+    | '/callback'
     | '/f/$forumHandle'
     | '/f/$forumHandle/t/$userHandle/$topicRKey'
   id:
@@ -82,6 +93,7 @@ export interface FileRouteTypes {
     | '/'
     | '/search'
     | '/f/$forumHandle'
+    | '/callback/'
     | '/f/$forumHandle/'
     | '/f/$forumHandle/t/$userHandle/$topicRKey'
   fileRoutesById: FileRoutesById
@@ -90,6 +102,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   SearchRoute: typeof SearchRoute
   FForumHandleRoute: typeof FForumHandleRouteWithChildren
+  CallbackIndexRoute: typeof CallbackIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -106,6 +119,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/callback/': {
+      id: '/callback/'
+      path: '/callback'
+      fullPath: '/callback'
+      preLoaderRoute: typeof CallbackIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/f/$forumHandle': {
@@ -150,6 +170,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   SearchRoute: SearchRoute,
   FForumHandleRoute: FForumHandleRouteWithChildren,
+  CallbackIndexRoute: CallbackIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

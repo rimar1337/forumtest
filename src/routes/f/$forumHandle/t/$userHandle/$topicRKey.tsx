@@ -1,12 +1,12 @@
 import { createFileRoute, Link, useParams } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
-import { useAuth } from "@/providers/PassAuthProvider";
+import { useAuth } from "@/providers/OAuthProvider";
 import { esavQuery } from "@/helpers/esquery";
 import {
   resolveIdentity,
   type ResolvedIdentity,
 } from "@/helpers/cachedidentityresolver";
-import AtpAgent from "@atproto/api";
+import AtpAgent, { Agent } from "@atproto/api";
 import {
   ArrowLeftIcon,
   ChatBubbleIcon,
@@ -345,7 +345,7 @@ export function PostCard({
   isCreatingReaction,
 }: {
   forumdid: string;
-  agent: AtpAgent | null;
+  agent: Agent | null;
   post: PostDoc;
   //author: AuthorInfo | null;
   //reactions: ReactionDoc[];
@@ -491,7 +491,9 @@ export function ForumTopic() {
   const uri = useMemo(() => {
     return `at://${op?.did}/party.whey.ft.topic.post/${topicRKey}`;
   }, [op?.did]);
-  const { agent, loading: authLoading } = useAuth();
+  const { agent, status } = useAuth();
+  const authLoading = status === 'loading'
+
   //const topic = useEsavDocument(uri);
   //const parsed = parseAtUri(uri);
 

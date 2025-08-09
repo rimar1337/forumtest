@@ -7,7 +7,7 @@ import { routeTree } from "./routeTree.gen";
 
 import "./styles.css";
 import reportWebVitals from "./reportWebVitals.ts";
-import { AuthProvider } from "./providers/PassAuthProvider.tsx";
+import { OAuthProvider } from "./providers/OAuthProvider.tsx";
 import { PersistentStoreProvider } from "./providers/PersistentStoreProvider.tsx";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ESAVLiveProvider } from "./esav/ESAVLiveProvider.tsx";
@@ -42,12 +42,12 @@ if (rootElement && !rootElement.innerHTML) {
     //<StrictMode>
       <ESAVLiveProvider url={ESAV_WEBSOCKET_URL}>
         <PersistentStoreProvider>
-          <AuthProvider>
+          <OAuthProvider>
             <QueryClientProvider client={queryClient}>
               {/* Pass the router instance with the context to the provider */}
               <RouterProvider router={router} />
             </QueryClientProvider>
-          </AuthProvider>
+          </OAuthProvider>
         </PersistentStoreProvider>
       </ESAVLiveProvider>
     //</StrictMode>

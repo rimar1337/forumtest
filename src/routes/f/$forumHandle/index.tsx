@@ -13,7 +13,7 @@ import { esavQuery } from "@/helpers/esquery";
 import * as Select from "@radix-ui/react-select";
 import * as Dialog from "@radix-ui/react-dialog";
 import { ChevronDownIcon, CheckIcon, Cross2Icon } from "@radix-ui/react-icons";
-import { useAuth } from "@/providers/PassAuthProvider";
+import { useAuth } from "@/providers/OAuthProvider";
 import { AtUri, BskyAgent } from "@atproto/api";
 import { useQuery, useQueryClient, QueryClient } from "@tanstack/react-query";
 import {
@@ -215,7 +215,9 @@ export function Forum() {
   );
 
   const navigate = useNavigate();
-  const { agent, loading: authLoading } = useAuth();
+  const { agent, status } = useAuth();
+
+  const authLoading = status === 'loading'
 
   const queryClient = useQueryClient();
 
