@@ -6,6 +6,8 @@ export const Route = createFileRoute('/callback/')({
 
 function RouteComponent() {
   const navigate = useNavigate()
-  navigate({to:"/"})
+  const redirectPath = sessionStorage.getItem('postLoginRedirect') || '/';
+  navigate({to:redirectPath})
+  sessionStorage.removeItem('postLoginRedirect');
   return <div>Hello "/callback/"!</div>
 }

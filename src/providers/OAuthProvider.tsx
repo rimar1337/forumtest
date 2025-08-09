@@ -66,6 +66,7 @@ export const OAuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const startLogin = useCallback(async (handleOrPdsUrl: string) => {
     if (status !== 'signedOut') return;
+    sessionStorage.setItem('postLoginRedirect', window.location.pathname + window.location.search);
     try {
       await oauthClient.signIn(handleOrPdsUrl);
     } catch (err) {
